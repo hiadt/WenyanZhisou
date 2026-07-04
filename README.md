@@ -23,8 +23,7 @@ wenyan-zhisou-advanced/
     ├── 01_项目完整报告.md
     ├── 02_技术方案说明.md
     ├── 03_实验结果与消融实验.md
-    ├── 04_服务器租用与部署指南.md
-    └── 05_通俗解释报告.md
+    └── 04_通俗解释报告.md
 ```
 
 ## 先跑通
@@ -78,10 +77,12 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml
 ```
 
-配置 `config.yaml` 中的大模型、小模型、OpenAlex 和 Semantic Scholar 参数，然后运行：
+配置 `config.yaml` 中的大模型、小模型、OpenAlex、Semantic Scholar、Serper 等参数，然后运行：
 
 ```bash
-python evaluate_pasa.py --config config.yaml --input data/RealScholarQuery/test.jsonl --output_dir runs/pasa_realscholar
+export DEEPSEEK_API_KEY="你的DeepSeek Key"
+export SERPER_API_KEY="你的Serper Key"
+python evaluate_pasa.py --config config.yaml --input data/pasa-dataset/RealScholarQuery/test.jsonl --output_dir runs/pasa_realscholar
 ```
 
 如果只是用在线大模型 API，而不在服务器本地部署 LLM，可以把 `config.llm.example.yaml` 复制成 `config.yaml`，设置对应 API Key 后运行。
@@ -90,11 +91,13 @@ python evaluate_pasa.py --config config.yaml --input data/RealScholarQuery/test.
 
 - 大模型：负责查询理解、子查询拆解、二轮查询演化、候选论文相关性验证和结果归纳。
 - 小模型：负责 embedding 语义召回和 cross-encoder reranker 精排。
-- 学术 API：对接 OpenAlex 和 Semantic Scholar，并过滤明显非学术噪声。
+- 学术 API：对接 OpenAlex、Semantic Scholar、arXiv，并可选接入 Serper/Google 风格搜索来补强 arXiv 召回。
+- PaSaTitleDB：如果服务器存在 PaSa 数据集的 `paper_database/id2paper.json`，系统会自动作为本地高召回标题库使用；没有该文件也能正常跳过。
 - Agent：采用轻量 PaSa-inspired Crawler/Selector 架构，自动组织多策略检索、候选合并、去重、一跳引文网络扩展、查询演化、批量相关性验证和综合排序。
+- 效率优化：在线 API 检索支持并发与进程内缓存，小模型 Embedding/Reranker 分数支持缓存，正式评测时减少重复模型计算和重复网络请求。
 - 全文扩展：本地语料支持 `full_text`/`text` 字段参与 BM25、Embedding 和 Reranker 打分；在线 API 仍以标题、摘要和元数据为主。
 - 排序策略：显式融合相关性、权威性、时效性和多样性，缓解“高召回带来噪声”和“结果同质化”的问题。
-- 评测：输出 Precision@20、Recall@20、Recall@50、Recall@100、F1@20、API 调用次数、LLM 调用次数和延迟。
+- 评测：输出 Precision@20、Recall@20、Recall@50、Recall@100、F1@20、API 调用次数、LLM 调用次数、延迟和逐条命中报告。
 - 前端：展示论文排序、查询拆解、Agent 搜索轨迹、结果归纳、关系图和 JSON 结果。
 
 ## 相比参考系统的轻量改进点
@@ -102,7 +105,7 @@ python evaluate_pasa.py --config config.yaml --input data/RealScholarQuery/test.
 本项目没有复刻 PaSa 的训练框架和强化学习 checkpoint，而是实现了一个更容易部署的轻量版本：用 Crawler 负责多策略召回、查询演化和引文网络扩展，用 Selector 负责候选预筛和 LLM 相关性验证。针对赛题提到的四类挑战，当前版本做了如下工程化改进：
 
 - 查询理解不充分：`LLMPlanner` 解析实体、方法、数据集、约束；解析失败时有本地领域词扩展兜底。
-- 覆盖率与精确度平衡：Crawler 采用 semantic-core、constraint-focused、authority-oriented、recency-oriented 多策略召回；Selector 再过滤低质量候选。
+- 覆盖率与精确度平衡：Crawler 采用 semantic-core、constraint-focused、authority-oriented、recency-oriented、多 API、Serper/arXiv 和本地 PaSaTitleDB 多路召回；Selector 再过滤低质量候选并做 F1@20 导向排序。
 - 权威性、时效性、相关性、多样性权衡：`ranker.py` 新增 authority、recency、diversity 分数，并与 BM25、Embedding、Reranker、LLM verifier 融合。
 - 结构化归纳展示：前端提供“Agent轨迹”“结果归纳”“关系图”，便于答辩时解释系统如何从查询走到最终结果。
 

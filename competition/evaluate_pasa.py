@@ -87,11 +87,14 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     evaluation benefits from a larger candidate pool and more selector passes.
     """
 
-    config.retrieval.max_candidates = max(config.retrieval.max_candidates, 300)
+    config.retrieval.max_candidates = max(config.retrieval.max_candidates, 260)
     config.budget.max_api_calls_per_query = max(config.budget.max_api_calls_per_query, 64)
     if use_llm:
-        config.budget.max_llm_calls_per_query = max(config.budget.max_llm_calls_per_query, 6)
-        config.ranking.llm_verify_top_n = max(config.ranking.llm_verify_top_n, 60)
+        config.budget.max_llm_calls_per_query = max(config.budget.max_llm_calls_per_query, 5)
+        config.ranking.llm_verify_top_n = max(config.ranking.llm_verify_top_n, 80)
+        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
+        config.ranking.api_weight = max(config.ranking.api_weight, 0.14)
+        config.ranking.llm_verifier_weight = max(config.ranking.llm_verifier_weight, 0.22)
 
 
 def paper_aliases(paper) -> set[str]:

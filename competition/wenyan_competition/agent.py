@@ -64,7 +64,13 @@ class AcademicSearchAgent:
             if round_id == 0:
                 active_strategies = strategies
             else:
-                evolved = self._next_queries(query, scoring_query, candidates, existing=queries)
+                evolved = self._next_queries(
+                    query,
+                    scoring_query,
+                    candidates,
+                    existing=queries,
+                    use_llm=synthesize,
+                )
                 active_strategies = [
                     {
                         "name": "query-evolution",
@@ -133,7 +139,8 @@ class AcademicSearchAgent:
                 candidates_after=len(selector_candidates),
                 selected_count=len(selector_candidates),
             )
-            for batch in _chunks(selector_candidates, 10):
+            batch_size = max(1, self.config.ranking.llm_verifier_batch_size)
+            for batch in _chunks(selector_candidates, batch_size):
                 # Reserve one LLM call for final result synthesis whenever possible.
                 reserve_calls = 1 if synthesize else 0
                 if self.llm_client.calls >= max(1, self.config.budget.max_llm_calls_per_query - reserve_calls):
@@ -261,10 +268,11 @@ class AcademicSearchAgent:
     def _selector_first_sort(self, candidates: List[Paper]) -> List[Paper]:
         """PaSa-style formal-evaluation ordering.
 
-        PaSa's reported recall@20/50/100 sorts crawled papers primarily by the
-        selector score.  For formal evaluation we therefore let LLM verifier
-        confidence dominate the final display rank, while retaining the fused
-        ranker score as the tie breaker for unverified candidates.
+        PaSa's reported recall@20/50/100 sorts crawled papers by selector
+        confidence.  In this lightweight system not every candidate can be sent
+        to the LLM, so the final score blends LLM confidence with the neural
+        ranker and source/search-engine score instead of burying all unverified
+        candidates.
         """
 
         def score(p: Paper):
@@ -274,15 +282,19 @@ class AcademicSearchAgent:
                 label_bonus = 0.35
             elif label.startswith("partial"):
                 label_bonus = 0.12
+            elif label.startswith("irrelevant"):
+                label_bonus = -0.35
             source_bonus = 0.025 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
-            verified = 1 if p.llm_score > 0 else 0
-            return (
-                verified,
-                p.llm_score + label_bonus + source_bonus,
-                p.final_score,
-                p.reranker_score,
-                p.embedding_score,
+            score_value = (
+                p.llm_score
+                + label_bonus
+                + source_bonus
+                + 0.32 * p.final_score
+                + 0.10 * p.api_score
+                + 0.08 * p.reranker_score
+                + 0.05 * p.embedding_score
             )
+            return (score_value, p.llm_score, p.final_score, p.api_score)
 
         return sorted(candidates, key=score, reverse=True)
 
@@ -371,12 +383,14 @@ class AcademicSearchAgent:
         scoring_query: str,
         candidates: List[Paper],
         existing: List[str],
+        use_llm: bool = True,
     ) -> List[str]:
         if not candidates:
             return []
-        evolved = self.evolver.evolve(original_query, scoring_query, candidates, existing)
-        if evolved:
-            return evolved
+        if use_llm:
+            evolved = self.evolver.evolve(original_query, scoring_query, candidates, existing)
+            if evolved:
+                return evolved
         top_text = " ".join((p.title + " " + p.abstract[:500] + " " + p.venue) for p in candidates[:10])
         banned = set(_tokens(scoring_query)) | {
             "article",

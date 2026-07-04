@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import xml.etree.ElementTree as ET
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List
 from urllib.parse import quote
 
 import requests
@@ -21,6 +23,8 @@ class AcademicRetriever:
         self.config = config
         self.api_calls = 0
         self.warnings: List[str] = []
+        self._lock = threading.Lock()
+        self._api_cache: Dict[tuple[str, str], List[Paper]] = {}
         self._local_retriever = (
             LocalCorpusRetriever(
                 self.config.local_corpus_path,
@@ -49,15 +53,25 @@ class AcademicRetriever:
         if self._pasa_retriever:
             for q in query_list:
                 papers.extend(self._pasa_retriever.search(q))
+        tasks: List[tuple[Callable[[str], List[Paper]], str]] = []
         for q in query_list:
             if self.config.use_serper and self.config.serper_api_key:
-                papers.extend(self._safe(self.search_serper_arxiv, q))
+                tasks.append((self.search_serper_arxiv, q))
             if self.config.use_arxiv:
-                papers.extend(self._safe(self.search_arxiv, q))
+                tasks.append((self.search_arxiv, q))
             if self.config.use_openalex:
-                papers.extend(self._safe(self.search_openalex, q))
+                tasks.append((self.search_openalex, q))
             if self.config.use_semantic_scholar:
-                papers.extend(self._safe(self.search_semantic_scholar, q))
+                tasks.append((self.search_semantic_scholar, q))
+        if self.config.api_parallelism <= 1 or len(tasks) <= 1:
+            for fn, q in tasks:
+                papers.extend(self._cached_safe(fn, q))
+        else:
+            max_workers = min(max(1, self.config.api_parallelism), len(tasks))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                future_map = {pool.submit(self._cached_safe, fn, q): (fn, q) for fn, q in tasks}
+                for future in as_completed(future_map):
+                    papers.extend(future.result())
         return deduplicate(papers)
 
     def expand_citation_network(self, seeds: List[Paper], max_api_calls: int) -> List[Paper]:
@@ -80,7 +94,7 @@ class AcademicRetriever:
         return deduplicate(out)
 
     def search_openalex(self, query: str) -> List[Paper]:
-        self.api_calls += 1
+        self._inc_api()
         params = [
             "search=" + quote(query),
             f"per-page={min(self.config.per_query, 50)}",
@@ -134,7 +148,7 @@ class AcademicRetriever:
         out: List[Paper] = []
         seen = set()
         for search_query in _arxiv_queries(query):
-            self.api_calls += 1
+            self._inc_api()
             params = {
                 "search_query": search_query,
                 "start": "0",
@@ -173,7 +187,7 @@ class AcademicRetriever:
             "Content-Type": "application/json",
         }
         for search_query in _serper_arxiv_queries(query):
-            self.api_calls += 1
+            self._inc_api()
             resp = requests.post(
                 "https://google.serper.dev/search",
                 headers=headers,
@@ -196,7 +210,7 @@ class AcademicRetriever:
             return []
         out: List[Paper] = []
         for batch in _batches(ids, 20):
-            self.api_calls += 1
+            self._inc_api()
             resp = requests.get(
                 "https://export.arxiv.org/api/query",
                 params={"id_list": ",".join(batch), "max_results": str(len(batch))},
@@ -216,7 +230,7 @@ class AcademicRetriever:
         return out
 
     def fetch_openalex_work(self, work_id: str) -> List[Paper]:
-        self.api_calls += 1
+        self._inc_api()
         url = _openalex_api_work_url(work_id)
         item = _get_json_or_none(url)
         if not item:
@@ -259,7 +273,7 @@ class AcademicRetriever:
         ]
 
     def search_semantic_scholar(self, query: str) -> List[Paper]:
-        self.api_calls += 1
+        self._inc_api()
         fields = ",".join(
             [
                 "paperId",
@@ -332,7 +346,7 @@ class AcademicRetriever:
         return out
 
     def fetch_semantic_scholar_paper(self, paper_id: str) -> List[Paper]:
-        self.api_calls += 1
+        self._inc_api()
         fields = ",".join(
             [
                 "paperId",
@@ -395,12 +409,30 @@ class AcademicRetriever:
             )
         ]
 
+    def _inc_api(self) -> None:
+        with self._lock:
+            self.api_calls += 1
+
+    def _cached_safe(self, fn, query: str, warn: bool = True) -> List[Paper]:
+        if not self.config.enable_api_cache:
+            return self._safe(fn, query, warn=warn)
+        key = (fn.__name__, query)
+        with self._lock:
+            cached = self._api_cache.get(key)
+        if cached is not None:
+            return [replace(p) for p in cached]
+        result = self._safe(fn, query, warn=warn)
+        with self._lock:
+            self._api_cache[key] = [replace(p) for p in result]
+        return result
+
     def _safe(self, fn, query: str, warn: bool = True) -> List[Paper]:
         try:
             return fn(query)
         except Exception as exc:
             if warn:
-                self.warnings.append(f"{fn.__name__} failed for query '{query}': {exc}")
+                with self._lock:
+                    self.warnings.append(f"{fn.__name__} failed for query '{query}': {exc}")
             return []
 
 

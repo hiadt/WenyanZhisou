@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import re
+import hashlib
 from collections import Counter
-from typing import List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 from .config import SmallModelConfig
 from .schema import Paper
@@ -20,6 +21,9 @@ class EmbeddingModel:
     def __init__(self, config: SmallModelConfig, force_fallback: bool = False):
         self.config = config
         self.model = None
+        self._query_cache: Dict[str, object] = {}
+        self._doc_cache: Dict[str, object] = {}
+        self._score_cache: Dict[Tuple[str, str], float] = {}
         if not force_fallback:
             try:
                 from sentence_transformers import SentenceTransformer
@@ -33,15 +37,28 @@ class EmbeddingModel:
         if not papers:
             return []
         if self.model is not None:
-            docs = [p.text() for p in papers]
-            qv = self.model.encode([query], normalize_embeddings=True, batch_size=1)[0]
-            dv = self.model.encode(
-                docs,
-                normalize_embeddings=True,
-                batch_size=self.config.embedding_batch_size,
-            )
-            return (dv @ qv).astype(float).tolist()
-        return [_sparse_cosine(query, p.text()) for p in papers]
+            if query not in self._query_cache:
+                self._query_cache[query] = self.model.encode([query], normalize_embeddings=True, batch_size=1)[0]
+            qv = self._query_cache[query]
+            doc_keys = [_paper_text_key(p) for p in papers]
+            missing = [(key, p.text()) for key, p in zip(doc_keys, papers) if key not in self._doc_cache]
+            if missing:
+                encoded = self.model.encode(
+                    [text for _, text in missing],
+                    normalize_embeddings=True,
+                    batch_size=self.config.embedding_batch_size,
+                )
+                for (key, _), vector in zip(missing, encoded):
+                    self._doc_cache[key] = vector
+            return [float(self._doc_cache[key] @ qv) for key in doc_keys]
+
+        scores = []
+        for p in papers:
+            key = (query, _paper_text_key(p))
+            if key not in self._score_cache:
+                self._score_cache[key] = _sparse_cosine(query, p.text())
+            scores.append(self._score_cache[key])
+        return scores
 
 
 class CrossEncoderReranker:
@@ -50,6 +67,7 @@ class CrossEncoderReranker:
     def __init__(self, config: SmallModelConfig, force_fallback: bool = False):
         self.config = config
         self.model = None
+        self._score_cache: Dict[Tuple[str, str], float] = {}
         if not force_fallback:
             try:
                 from sentence_transformers import CrossEncoder
@@ -63,10 +81,22 @@ class CrossEncoderReranker:
         if not papers:
             return []
         if self.model is not None:
-            pairs = [(query, p.title + "\n" + p.abstract[:1200]) for p in papers]
-            raw = self.model.predict(pairs, batch_size=self.config.reranker_batch_size)
-            return _minmax([float(x) for x in raw])
-        return [_pair_heuristic(query, p) for p in papers]
+            keys = [(query, _paper_rerank_key(p)) for p in papers]
+            missing = [(key, p) for key, p in zip(keys, papers) if key not in self._score_cache]
+            if missing:
+                pairs = [(query, p.title + "\n" + p.abstract[:1200]) for _, p in missing]
+                raw = self.model.predict(pairs, batch_size=self.config.reranker_batch_size)
+                for (key, _), value in zip(missing, raw):
+                    self._score_cache[key] = float(value)
+            return _minmax([self._score_cache[key] for key in keys])
+
+        scores = []
+        for p in papers:
+            key = (query, _paper_rerank_key(p))
+            if key not in self._score_cache:
+                self._score_cache[key] = _pair_heuristic(query, p)
+            scores.append(self._score_cache[key])
+        return scores
 
 
 def bm25_like_scores(query: str, papers: Sequence[Paper]) -> List[float]:
@@ -157,6 +187,18 @@ def _important_phrase_hit(query: str, text: str) -> bool:
 
 def _tokens(text: str) -> List[str]:
     return re.findall(r"[a-z0-9][a-z0-9\-]{1,}", (text or "").lower())
+
+
+def _paper_text_key(paper: Paper) -> str:
+    return _stable_key("|".join([paper.key(), paper.title or "", paper.abstract[:500] or "", paper.full_text[:500] or ""]))
+
+
+def _paper_rerank_key(paper: Paper) -> str:
+    return _stable_key("|".join([paper.key(), paper.title or "", paper.abstract[:1200] or ""]))
+
+
+def _stable_key(text: str) -> str:
+    return hashlib.blake2b(text.encode("utf-8", errors="ignore"), digest_size=12).hexdigest()
 
 
 def _minmax(values: Sequence[float]) -> List[float]:

@@ -39,6 +39,8 @@ retrieval:
   citation_expand_seeds: 8
   citation_expand_limit: 80
   max_rounds: 2
+  api_parallelism: 6
+  enable_api_cache: true
 
 ranking:
   api_weight: 0.10
@@ -50,6 +52,7 @@ ranking:
   recency_weight: 0.03
   diversity_weight: 0.01
   llm_verify_top_n: 30
+  llm_verifier_batch_size: 20
 
 budget:
   max_llm_calls_per_query: 4

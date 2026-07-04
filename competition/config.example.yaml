@@ -41,6 +41,9 @@ retrieval:
   # Minimum local-corpus match score. Use >0 for tiny smoke corpora to avoid
   # returning unrelated demo papers for out-of-domain queries.
   local_min_score: 0.0
+  # Parallel online API requests and per-process cache reduce benchmark latency.
+  api_parallelism: 6
+  enable_api_cache: true
 
 ranking:
   api_weight: 0.10
@@ -52,6 +55,7 @@ ranking:
   recency_weight: 0.03
   diversity_weight: 0.01
   llm_verify_top_n: 30
+  llm_verifier_batch_size: 20
 
 budget:
   max_llm_calls_per_query: 6

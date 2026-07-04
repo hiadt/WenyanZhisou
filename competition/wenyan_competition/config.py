@@ -68,6 +68,8 @@ class RetrievalConfig:
     max_rounds: int = 2
     local_corpus_path: str = ""
     local_min_score: float = 0.0
+    api_parallelism: int = 6
+    enable_api_cache: bool = True
 
 
 @dataclass
@@ -81,6 +83,7 @@ class RankingConfig:
     recency_weight: float = 0.03
     diversity_weight: float = 0.01
     llm_verify_top_n: int = 30
+    llm_verifier_batch_size: int = 20
 
 
 @dataclass
