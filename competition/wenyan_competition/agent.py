@@ -81,11 +81,18 @@ class AcademicSearchAgent:
                 queries = list(dict.fromkeys(queries + evolved))
 
             for strategy in active_strategies:
-                strategy_queries = self._budgeted_queries(strategy["queries"])
-                if not strategy_queries:
+                all_strategy_queries = _unique([q for q in strategy["queries"] if q])
+                if not all_strategy_queries:
                     continue
                 before = len(candidates)
-                found = self.retriever.search_many(strategy_queries)
+                local_found = self.retriever.search_many(all_strategy_queries, include_online=False)
+                strategy_queries = self._budgeted_queries(all_strategy_queries)
+                online_found = (
+                    self.retriever.search_many(strategy_queries, include_local=False)
+                    if strategy_queries
+                    else []
+                )
+                found = deduplicate(local_found + online_found)
                 candidates = deduplicate(candidates + found)
                 candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
                 self._add_trace(
@@ -93,7 +100,7 @@ class AcademicSearchAgent:
                     role="Crawler",
                     action=f"round {round_id + 1}: {strategy['name']}",
                     detail=strategy["detail"],
-                    queries=strategy_queries,
+                    queries=all_strategy_queries,
                     candidates_before=before,
                     candidates_after=len(candidates),
                     selected_count=len(found),
@@ -284,17 +291,21 @@ class AcademicSearchAgent:
                 label_bonus = 0.12
             elif label.startswith("irrelevant"):
                 label_bonus = -0.35
-            source_bonus = 0.025 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            source_bonus = 0.045 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            text_evidence = (
+                0.18 * p.reranker_score
+                + 0.12 * p.embedding_score
+                + 0.08 * p.bm25_score
+            )
             score_value = (
-                p.llm_score
+                0.82 * p.llm_score
                 + label_bonus
                 + source_bonus
-                + 0.32 * p.final_score
-                + 0.10 * p.api_score
-                + 0.08 * p.reranker_score
-                + 0.05 * p.embedding_score
+                + text_evidence
+                + 0.30 * p.final_score
+                + 0.08 * p.api_score
             )
-            return (score_value, p.llm_score, p.final_score, p.api_score)
+            return (score_value, p.llm_score, p.reranker_score, p.final_score, p.api_score)
 
         return sorted(candidates, key=score, reverse=True)
 
