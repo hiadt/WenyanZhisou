@@ -81,17 +81,32 @@ def main() -> None:
 
 
 def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
-    """Use stronger PaSa-like settings for benchmark evaluation.
+    """Use one score-oriented competition setting.
 
-    The web demo remains responsive with config.yaml defaults, but formal PaSa
-    evaluation benefits from a larger candidate pool and more selector passes.
+    The official scoring gives F1 70%, efficiency 20%, and structured output
+    10%.  This setting keeps PaSa-style multi-source recall and LLM selector
+    verification, but avoids expensive second-round/citation expansion by
+    default because those added latency without stable gains in RealScholarQuery
+    spot checks.
     """
 
-    config.retrieval.max_candidates = max(config.retrieval.max_candidates, 260)
-    config.budget.max_api_calls_per_query = max(config.budget.max_api_calls_per_query, 64)
+    config.retrieval.per_query = min(config.retrieval.per_query, 18)
+    config.retrieval.max_candidates = 220
+    config.retrieval.max_rounds = 1
+    config.retrieval.citation_expand_seeds = 0
+    config.retrieval.citation_expand_limit = 0
+    config.retrieval.serper_top_k = min(config.retrieval.serper_top_k, 10)
+    config.retrieval.serper_arxiv_limit = min(config.retrieval.serper_arxiv_limit, 16)
+    config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 2)
+    config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 2)
+    config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 2)
+    config.retrieval.arxiv_query_variants = min(config.retrieval.arxiv_query_variants, 2)
+    config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 10)
+    config.retrieval.enable_api_cache = True
+    config.budget.max_api_calls_per_query = 36
     if use_llm:
-        config.budget.max_llm_calls_per_query = max(config.budget.max_llm_calls_per_query, 5)
-        config.ranking.llm_verify_top_n = max(config.ranking.llm_verify_top_n, 80)
+        config.budget.max_llm_calls_per_query = 4
+        config.ranking.llm_verify_top_n = 60
         config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
         config.ranking.api_weight = max(config.ranking.api_weight, 0.14)
         config.ranking.llm_verifier_weight = max(config.ranking.llm_verifier_weight, 0.22)

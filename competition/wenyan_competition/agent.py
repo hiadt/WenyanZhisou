@@ -342,15 +342,50 @@ class AcademicSearchAgent:
         remaining = self.config.budget.max_api_calls_per_query - self.retriever.api_calls
         if remaining <= 0:
             return []
-        source_count = (
-            int(self.config.retrieval.use_openalex)
-            + int(self.config.retrieval.use_semantic_scholar)
-            + (2 if self.config.retrieval.use_serper and self.config.retrieval.serper_api_key else 0)
-            + (3 if self.config.retrieval.use_arxiv else 0)
+        selected: List[str] = []
+        spent = 0
+        serper_left = max(
+            0,
+            self.config.retrieval.serper_query_limit
+            - getattr(self.retriever, "_serper_queries_used", 0),
         )
-        source_count = max(1, source_count)
-        max_queries = max(1, remaining // source_count)
-        return _unique([q for q in queries if q])[:max_queries]
+        arxiv_left = max(
+            0,
+            self.config.retrieval.arxiv_query_limit
+            - getattr(self.retriever, "_arxiv_queries_used", 0),
+        )
+        for q in _unique([q for q in queries if q]):
+            cost, uses_serper, uses_arxiv = self._estimated_query_cost(serper_left, arxiv_left)
+            if spent + cost > remaining:
+                break
+            selected.append(q)
+            spent += cost
+            if uses_serper:
+                serper_left -= 1
+            if uses_arxiv:
+                arxiv_left -= 1
+        return selected
+
+    def _estimated_query_cost(self, serper_left: int, arxiv_left: int) -> tuple[int, bool, bool]:
+        cost = int(self.config.retrieval.use_openalex) + int(self.config.retrieval.use_semantic_scholar)
+        uses_serper = (
+            self.config.retrieval.use_serper
+            and bool(self.config.retrieval.serper_api_key)
+            and serper_left > 0
+            and self.config.retrieval.serper_query_variants > 0
+        )
+        uses_arxiv = (
+            self.config.retrieval.use_arxiv
+            and arxiv_left > 0
+            and self.config.retrieval.arxiv_query_variants > 0
+        )
+        if uses_serper:
+            # Each Serper variant is one web-search call; one extra arXiv call
+            # fetches metadata for the extracted ids.
+            cost += min(3, max(0, self.config.retrieval.serper_query_variants)) + 1
+        if uses_arxiv:
+            cost += min(3, max(0, self.config.retrieval.arxiv_query_variants))
+        return max(0, cost), uses_serper, uses_arxiv
 
     def _add_trace(
         self,

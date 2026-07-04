@@ -55,6 +55,10 @@ class RetrievalConfig:
     serper_api_key: str = field(default_factory=lambda: os.getenv("SERPER_API_KEY", ""))
     serper_top_k: int = 10
     serper_arxiv_limit: int = 18
+    serper_query_limit: int = 2
+    serper_query_variants: int = 2
+    arxiv_query_limit: int = 2
+    arxiv_query_variants: int = 2
     academic_only: bool = True
     # Optional PaSa paper database: JSON mapping arXiv id -> title.
     # If the file does not exist, the retriever silently skips this source.

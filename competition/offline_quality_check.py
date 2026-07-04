@@ -170,11 +170,17 @@ def check_serper_arxiv_helpers() -> None:
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
-    assert cfg.ranking.llm_verify_top_n >= 80
+    assert cfg.ranking.llm_verify_top_n == 60
     assert cfg.ranking.llm_verifier_batch_size >= 20
-    assert cfg.budget.max_llm_calls_per_query >= 5
-    assert cfg.retrieval.max_candidates >= 260
-    assert cfg.budget.max_api_calls_per_query >= 64
+    assert cfg.budget.max_llm_calls_per_query == 4
+    assert cfg.retrieval.max_candidates == 220
+    assert cfg.retrieval.max_rounds == 1
+    assert cfg.retrieval.citation_expand_limit == 0
+    assert cfg.budget.max_api_calls_per_query == 36
+    assert cfg.retrieval.serper_query_limit <= 2
+    assert cfg.retrieval.serper_query_variants <= 2
+    assert cfg.retrieval.arxiv_query_limit <= 2
+    assert cfg.retrieval.arxiv_query_variants <= 2
 
 
 def check_openalex_url_normalization() -> None:

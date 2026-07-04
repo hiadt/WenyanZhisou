@@ -26,6 +26,10 @@ retrieval:
   serper_api_key: "${SERPER_API_KEY}"
   serper_top_k: 10
   serper_arxiv_limit: 18
+  serper_query_limit: 2
+  serper_query_variants: 2
+  arxiv_query_limit: 2
+  arxiv_query_variants: 2
   academic_only: true
   # Optional PaSa local arXiv title database. It is used only if the file exists.
   pasa_id2paper_path: "data/pasa-dataset/paper_database/id2paper.json"

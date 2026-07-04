@@ -113,7 +113,7 @@ class LLMVerifier:
         for idx, p in enumerate(papers, 1):
             chunks.append(
                 f"[{idx}] source={p.source}; paper_id={p.paper_id}; url={p.url}\n"
-                f"title={p.title}\nyear={p.year}; venue={p.venue}\nabstract={p.abstract[:900]}"
+                f"title={p.title}\nyear={p.year}; venue={p.venue}\nabstract={p.abstract[:650]}"
             )
         prompt = f"""
 Judge paper relevance to the academic query. Return ONLY JSON:

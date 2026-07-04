@@ -25,6 +25,8 @@ class AcademicRetriever:
         self.warnings: List[str] = []
         self._lock = threading.Lock()
         self._api_cache: Dict[tuple[str, str], List[Paper]] = {}
+        self._serper_queries_used = 0
+        self._arxiv_queries_used = 0
         self._local_retriever = (
             LocalCorpusRetriever(
                 self.config.local_corpus_path,
@@ -43,6 +45,8 @@ class AcademicRetriever:
     def reset_stats(self) -> None:
         self.api_calls = 0
         self.warnings = []
+        self._serper_queries_used = 0
+        self._arxiv_queries_used = 0
 
     def search_many(self, queries: Iterable[str]) -> List[Paper]:
         query_list = list(queries)
@@ -55,10 +59,19 @@ class AcademicRetriever:
                 papers.extend(self._pasa_retriever.search(q))
         tasks: List[tuple[Callable[[str], List[Paper]], str]] = []
         for q in query_list:
-            if self.config.use_serper and self.config.serper_api_key:
+            if (
+                self.config.use_serper
+                and self.config.serper_api_key
+                and self._serper_queries_used < max(0, self.config.serper_query_limit)
+            ):
                 tasks.append((self.search_serper_arxiv, q))
-            if self.config.use_arxiv:
+                self._serper_queries_used += 1
+            if (
+                self.config.use_arxiv
+                and self._arxiv_queries_used < max(0, self.config.arxiv_query_limit)
+            ):
                 tasks.append((self.search_arxiv, q))
+                self._arxiv_queries_used += 1
             if self.config.use_openalex:
                 tasks.append((self.search_openalex, q))
             if self.config.use_semantic_scholar:
@@ -147,7 +160,10 @@ class AcademicRetriever:
     def search_arxiv(self, query: str) -> List[Paper]:
         out: List[Paper] = []
         seen = set()
-        for search_query in _arxiv_queries(query):
+        variant_limit = max(0, self.config.arxiv_query_variants)
+        if variant_limit <= 0:
+            return []
+        for search_query in _arxiv_queries(query)[:variant_limit]:
             self._inc_api()
             params = {
                 "search_query": search_query,
@@ -186,7 +202,10 @@ class AcademicRetriever:
             "X-API-KEY": self.config.serper_api_key,
             "Content-Type": "application/json",
         }
-        for search_query in _serper_arxiv_queries(query):
+        variant_limit = max(0, self.config.serper_query_variants)
+        if variant_limit <= 0:
+            return []
+        for search_query in _serper_arxiv_queries(query)[:variant_limit]:
             self._inc_api()
             resp = requests.post(
                 "https://google.serper.dev/search",
