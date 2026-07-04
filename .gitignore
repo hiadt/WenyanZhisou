@@ -1,0 +1,20 @@
+0.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Large local datasets and model/runtime outputs.
+competition/data/pasa-dataset/
+competition/runs/
+competition/checkpoints/
+competition/models/
+
+# Local secrets and machine-specific config.
+competition/.env
+competition/config.yaml
+*.key
+
+# OS/editor noise.
+.DS_Store
+Thumbs.db

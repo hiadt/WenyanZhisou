@@ -1,0 +1,57 @@
+llm:
+  # Any OpenAI-compatible chat-completions endpoint can be used here:
+  # DeepSeek, Qwen via DashScope/Bailian, SiliconFlow, vLLM, Ollama, etc.
+  provider: openai_compatible
+  base_url: "https://api.deepseek.com/v1"
+  api_key: "${DEEPSEEK_API_KEY}"
+  model: "deepseek-chat"
+  temperature: 0.2
+  max_tokens: 1500
+  timeout: 60
+
+small_models:
+  # Use real models for formal runs. If the current machine has no GPU or
+  # cannot download weights, start the app with --fallback_models first.
+  embedding_model: "BAAI/bge-small-en-v1.5"
+  reranker_model: "BAAI/bge-reranker-base"
+  device: "auto"
+  embedding_batch_size: 64
+  reranker_batch_size: 16
+
+retrieval:
+  use_openalex: true
+  use_semantic_scholar: true
+  use_arxiv: true
+  use_serper: true
+  openalex_mailto: ""
+  semantic_scholar_api_key: "${SEMANTIC_SCHOLAR_API_KEY}"
+  serper_api_key: "${SERPER_API_KEY}"
+  serper_top_k: 10
+  serper_arxiv_limit: 18
+  academic_only: true
+  pasa_id2paper_path: "data/pasa-dataset/paper_database/id2paper.json"
+  pasa_title_limit: 80
+  pasa_title_min_score: 0.10
+  local_corpus_path: ""
+  local_min_score: 0.0
+  per_query: 20
+  max_candidates: 120
+  citation_expand_seeds: 8
+  citation_expand_limit: 80
+  max_rounds: 2
+
+ranking:
+  api_weight: 0.10
+  bm25_weight: 0.15
+  embedding_weight: 0.25
+  reranker_weight: 0.25
+  llm_verifier_weight: 0.15
+  authority_weight: 0.06
+  recency_weight: 0.03
+  diversity_weight: 0.01
+  llm_verify_top_n: 30
+
+budget:
+  max_llm_calls_per_query: 4
+  max_api_calls_per_query: 24
+  max_latency_seconds: 180

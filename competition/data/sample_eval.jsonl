@@ -1,0 +1,3 @@
+{"query":"large language model hallucination detection factuality evaluation","gold_ids":["P1","P2","P3"]}
+{"query":"software vulnerability detection graph neural network code representation","gold_ids":["P4","P5"]}
+{"query":"retrieval augmented generation evaluation evidence attribution","gold_ids":["P6","P7"]}

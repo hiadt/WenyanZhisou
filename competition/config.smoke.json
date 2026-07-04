@@ -1,0 +1,45 @@
+{
+  "llm": {
+    "provider": "none",
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "temperature": 0.2,
+    "max_tokens": 900,
+    "timeout": 20
+  },
+  "small_models": {
+    "embedding_model": "fallback",
+    "reranker_model": "fallback",
+    "device": "cpu",
+    "embedding_batch_size": 32,
+    "reranker_batch_size": 8
+  },
+  "retrieval": {
+    "use_openalex": false,
+    "use_semantic_scholar": false,
+    "local_corpus_path": "data/sample_corpus.jsonl",
+    "per_query": 10,
+    "max_candidates": 30,
+    "citation_expand_seeds": 4,
+    "citation_expand_limit": 20,
+    "max_rounds": 2,
+    "local_min_score": 0.28
+  },
+  "ranking": {
+    "api_weight": 0.15,
+    "bm25_weight": 0.20,
+    "embedding_weight": 0.35,
+    "reranker_weight": 0.30,
+    "llm_verifier_weight": 0.0,
+    "authority_weight": 0.05,
+    "recency_weight": 0.02,
+    "diversity_weight": 0.01,
+    "llm_verify_top_n": 0
+  },
+  "budget": {
+    "max_llm_calls_per_query": 0,
+    "max_api_calls_per_query": 5,
+    "max_latency_seconds": 60
+  }
+}
