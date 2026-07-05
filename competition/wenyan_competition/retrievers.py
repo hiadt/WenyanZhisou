@@ -812,7 +812,7 @@ def _year_from_date(text: str):
     return int(match.group(0)) if match else None
 
 
-def _get_json_or_none(url: str, headers: Dict[str, str] | None = None, timeout: int = 12):
+def _get_json_or_none(url: str, headers: Dict[str, str] | None = None, timeout: int = 6):
     resp = requests.get(url, headers=headers or {}, timeout=timeout)
     if resp.status_code >= 400:
         return None

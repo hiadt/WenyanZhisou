@@ -26,35 +26,24 @@ class CompetitionRanker:
     def rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         if not papers:
             return []
-        self.last_stage_times = {}
-        with _timer(self.last_stage_times, "bm25_seconds"):
-            bm25 = bm25_like_scores(query, papers)
+        prelim = self.pre_rank(query, papers)
+        rerank_limit = min(max(1, self.config.rerank_candidate_limit), len(prelim))
+        head = prelim[:rerank_limit]
+        tail = prelim[rerank_limit:]
+
         with _timer(self.last_stage_times, "embedding_seconds"):
-            emb = self.embedding.score(query, papers)
+            emb = self.embedding.score(query, head)
         with _timer(self.last_stage_times, "reranker_seconds"):
-            rerank = self.reranker.score(query, papers)
+            rerank = self.reranker.score(query, head)
         with _timer(self.last_stage_times, "merge_rank_seconds"):
-            api = _normalize(
-                [
-                    p.api_score
-                    + math.log1p(p.citation_count) * 0.03
-                    + _metadata_quality_bonus(p)
-                    for p in papers
-                ]
-            )
-            authority = _normalize([_authority_raw(p) for p in papers])
-            recency = _normalize([_recency_raw(query, p) for p in papers])
-            llm = [p.llm_score for p in papers]
+            api = [p.api_score for p in head]
+            bm25 = [p.bm25_score for p in head]
+            llm = [p.llm_score for p in head]
 
             weighted_scores = []
-            for i, p in enumerate(papers):
-                p.bm25_score = bm25[i]
+            for i, p in enumerate(head):
                 p.embedding_score = emb[i]
                 p.reranker_score = rerank[i]
-                p.api_score = api[i]
-                p.authority_score = authority[i]
-                p.recency_score = recency[i]
-                p.diversity_score = 0.0
                 weighted_scores.append(
                     self.config.api_weight * p.api_score
                     + self.config.bm25_weight * p.bm25_score
@@ -79,17 +68,58 @@ class CompetitionRanker:
                 )
                 fused_scores = _normalize(rrf_scores)
                 weighted_norm = _normalize(weighted_scores)
-                for i, p in enumerate(papers):
+                for i, p in enumerate(head):
                     p.final_score = (
                         0.70 * fused_scores[i]
                         + 0.30 * weighted_norm[i]
                         + _selector_confidence_bonus(p)
                     )
             else:
-                for i, p in enumerate(papers):
+                for i, p in enumerate(head):
                     p.final_score = weighted_scores[i] + _selector_confidence_bonus(p)
 
-            return _diversified_sort(papers, self.config.diversity_weight)
+            for p in tail:
+                p.embedding_score = 0.0
+                p.reranker_score = 0.0
+                p.final_score = max(0.0, p.final_score - 0.03)
+
+            return _diversified_sort(head + tail, self.config.diversity_weight)
+
+    def pre_rank(self, query: str, papers: List[Paper]) -> List[Paper]:
+        """Cheap intermediate ordering without embedding/reranker inference."""
+
+        if not papers:
+            return []
+        self.last_stage_times = {}
+        with _timer(self.last_stage_times, "bm25_seconds"):
+            bm25 = bm25_like_scores(query, papers)
+        with _timer(self.last_stage_times, "merge_rank_seconds"):
+            api = _normalize(
+                [
+                    p.api_score
+                    + math.log1p(p.citation_count) * 0.03
+                    + _metadata_quality_bonus(p)
+                    for p in papers
+                ]
+            )
+            authority = _normalize([_authority_raw(p) for p in papers])
+            recency = _normalize([_recency_raw(query, p) for p in papers])
+            for i, p in enumerate(papers):
+                p.bm25_score = bm25[i]
+                p.api_score = api[i]
+                p.authority_score = authority[i]
+                p.recency_score = recency[i]
+                p.diversity_score = 0.0
+                p.final_score = (
+                    0.22 * p.api_score
+                    + 0.50 * p.bm25_score
+                    + 0.18 * p.authority_score
+                    + 0.07 * p.recency_score
+                    + 0.03 * p.llm_score
+                    + _intent_alignment_bonus(query, p)
+                    + _selector_confidence_bonus(p)
+                )
+        return sorted(papers, key=lambda p: p.final_score, reverse=True)
 
 
 @contextmanager

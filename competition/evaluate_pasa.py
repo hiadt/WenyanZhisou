@@ -42,7 +42,7 @@ def main() -> None:
     metric_rows = []
     hit_rows = []
     debug_rows = []
-    eval_pool_k = max(args.top_k, 150 if not args.no_eval_boost else 100)
+    eval_pool_k = max(args.top_k, 100)
 
     with pred_path.open("w", encoding="utf-8") as f:
         for ex in tqdm(examples, desc="evaluating"):
@@ -90,32 +90,32 @@ def main() -> None:
 def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     """Use the current score-oriented competition setting.
 
-    v18 keeps the PaSa-style multi-source recall path, but it no longer cuts
-    recall blindly.  The first pass is compact; weak candidate pools trigger a
-    second pass and a small citation expansion.  Ranking uses RRF so BM25,
-    embedding, reranker, API and LLM signals each keep a chance to surface gold
-    papers.
+    v19 keeps the PaSa-style multi-source recall path while removing the main
+    latency traps: repeated full reranking, overlarge pools and default citation
+    expansion.  Retrieval still has an adaptive second pass, but full neural
+    reranking is reserved for the final selector stage.
     """
 
-    config.retrieval.per_query = min(max(config.retrieval.per_query, 40), 45)
-    config.retrieval.max_candidates = 420
-    config.retrieval.min_candidate_pool_size = max(config.retrieval.min_candidate_pool_size, 180)
+    config.retrieval.per_query = min(max(config.retrieval.per_query, 28), 35)
+    config.retrieval.max_candidates = min(max(config.retrieval.max_candidates, 140), 180)
+    config.retrieval.min_candidate_pool_size = 120
     config.retrieval.enable_adaptive_second_pass = True
-    config.retrieval.api_timeout_seconds = min(max(config.retrieval.api_timeout_seconds, 8), 12)
-    config.retrieval.pasa_title_limit = max(config.retrieval.pasa_title_limit, 220)
-    config.retrieval.pasa_title_min_score = min(config.retrieval.pasa_title_min_score, 0.075)
+    config.retrieval.api_timeout_seconds = 6
+    config.retrieval.pasa_title_limit = min(max(config.retrieval.pasa_title_limit, 140), 180)
+    config.retrieval.pasa_title_min_score = min(config.retrieval.pasa_title_min_score, 0.085)
     config.retrieval.max_rounds = 1
-    config.retrieval.citation_expand_seeds = 5
-    config.retrieval.citation_expand_limit = 40
-    config.retrieval.serper_top_k = min(max(config.retrieval.serper_top_k, 10), 12)
-    config.retrieval.serper_arxiv_limit = min(max(config.retrieval.serper_arxiv_limit, 18), 24)
-    config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 2)
-    config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 2)
-    config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 2)
-    config.retrieval.arxiv_query_variants = min(config.retrieval.arxiv_query_variants, 2)
-    config.retrieval.api_parallelism = min(max(config.retrieval.api_parallelism, 6), 8)
+    config.retrieval.citation_expand_seeds = 0
+    config.retrieval.citation_expand_limit = 0
+    config.retrieval.serper_top_k = min(max(config.retrieval.serper_top_k, 8), 10)
+    config.retrieval.serper_arxiv_limit = min(max(config.retrieval.serper_arxiv_limit, 10), 14)
+    config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 1)
+    config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 1)
+    config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 1)
+    config.retrieval.arxiv_query_variants = min(config.retrieval.arxiv_query_variants, 1)
+    config.retrieval.api_parallelism = min(max(config.retrieval.api_parallelism, 4), 6)
     config.retrieval.enable_api_cache = True
-    config.budget.max_api_calls_per_query = 30
+    config.budget.max_api_calls_per_query = 16
+    config.budget.max_latency_seconds = min(config.budget.max_latency_seconds, 70)
     config.ranking.api_weight = 0.08
     config.ranking.bm25_weight = 0.20
     config.ranking.embedding_weight = 0.32
@@ -125,10 +125,11 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     config.ranking.diversity_weight = 0.002
     config.ranking.use_rrf = True
     config.ranking.rrf_k = 60
+    config.ranking.rerank_candidate_limit = min(max(config.ranking.rerank_candidate_limit, 80), 100)
     if use_llm:
         config.budget.max_llm_calls_per_query = 3
-        config.ranking.llm_verify_top_n = 40
-        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
+        config.ranking.llm_verify_top_n = 30
+        config.ranking.llm_verifier_batch_size = min(max(config.ranking.llm_verifier_batch_size, 15), 20)
         config.ranking.llm_verifier_weight = 0.08
     else:
         config.ranking.llm_verifier_weight = 0.0

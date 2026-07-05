@@ -101,7 +101,7 @@ class AcademicSearchAgent:
                 candidates=candidates,
                 stage_times=stage_times,
             )
-            candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+            candidates = self._pre_rank_candidates(scoring_query, candidates, stage_times)[
                 : self.config.retrieval.max_candidates
             ]
 
@@ -128,7 +128,7 @@ class AcademicSearchAgent:
                     candidates=candidates,
                     stage_times=stage_times,
                 )
-                candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                candidates = self._pre_rank_candidates(scoring_query, candidates, stage_times)[
                     : self.config.retrieval.max_candidates
                 ]
                 need_more_recall = self._should_expand_recall(candidates)
@@ -151,7 +151,7 @@ class AcademicSearchAgent:
                     )
                 if expanded:
                     candidates = deduplicate(candidates + expanded)
-                    candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                    candidates = self._pre_rank_candidates(scoring_query, candidates, stage_times)[
                         : self.config.retrieval.max_candidates
                     ]
                 self._add_trace(
@@ -166,7 +166,9 @@ class AcademicSearchAgent:
             if round_id + 1 >= self.config.retrieval.max_rounds or not candidates:
                 break
 
-        candidates = candidates[: self.config.retrieval.max_candidates]
+        candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+            : self.config.retrieval.max_candidates
+        ]
         verify_n = min(self.config.ranking.llm_verify_top_n, len(candidates))
         if self.llm_client and self.llm_client.calls < self.config.budget.max_llm_calls_per_query:
             selector_candidates = self._selector_candidates(candidates, verify_n)
@@ -317,7 +319,7 @@ class AcademicSearchAgent:
                 found = self.retriever.search_many(strategy_queries)
             candidates = deduplicate(candidates + found)
             if len(candidates) > self.config.retrieval.max_candidates * 2:
-                candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                candidates = self._pre_rank_candidates(scoring_query, candidates, stage_times)[
                     : self.config.retrieval.max_candidates
                 ]
             self._add_trace(
@@ -345,6 +347,17 @@ class AcademicSearchAgent:
             stage_times[key] = stage_times.get(key, 0.0) + value
         return ranked
 
+    def _pre_rank_candidates(
+        self,
+        scoring_query: str,
+        candidates: List[Paper],
+        stage_times: Dict[str, float],
+    ) -> List[Paper]:
+        ranked = self.ranker.pre_rank(scoring_query, candidates)
+        for key, value in self.ranker.last_stage_times.items():
+            stage_times[key] = stage_times.get(key, 0.0) + value
+        return ranked
+
     def _should_expand_recall(self, candidates: List[Paper]) -> bool:
         if not candidates:
             return True
@@ -357,9 +370,9 @@ class AcademicSearchAgent:
         )
         if len(candidates) < self.config.retrieval.min_candidate_pool_size:
             return True
-        if avg_top20 < 0.45:
+        if avg_top20 < 0.35:
             return True
-        if high_conf_count < 5:
+        if high_conf_count < 3:
             return True
         return False
 

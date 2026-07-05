@@ -71,7 +71,7 @@ class RetrievalConfig:
     citation_expand_limit: int = 80
     min_candidate_pool_size: int = 180
     enable_adaptive_second_pass: bool = True
-    api_timeout_seconds: int = 12
+    api_timeout_seconds: int = 6
     max_rounds: int = 2
     local_corpus_path: str = ""
     local_min_score: float = 0.0
@@ -93,6 +93,7 @@ class RankingConfig:
     llm_verifier_batch_size: int = 20
     use_rrf: bool = True
     rrf_k: int = 60
+    rerank_candidate_limit: int = 100
 
 
 @dataclass
