@@ -25,12 +25,13 @@ def build_demo_local_output(query: str, top_k: int = 8) -> Optional[SearchOutput
         return None
     papers = _topic_papers(topic)[: max(1, min(20, top_k))]
     plan = _topic_plan(query, topic)
+    llm_calls, api_calls, latency_seconds = _topic_stats(topic)
     stats = AgentStats(
-        llm_calls=1,
-        api_calls=1,
+        llm_calls=llm_calls,
+        api_calls=api_calls,
         estimated_prompt_tokens=520,
         estimated_completion_tokens=220,
-        latency_seconds=6.8,
+        latency_seconds=latency_seconds,
         warnings=[],
     )
     trace = [
@@ -191,6 +192,19 @@ def _topic_synthesis(topic: Dict[str, object], papers: List[Paper]) -> Dict[str,
         "gaps": list(topic["gaps"]),
         "next_search_suggestions": list(topic["next"]),
     }
+
+
+def _topic_stats(topic: Dict[str, object]) -> tuple[int, int, float]:
+    key = str(topic.get("key") or "")
+    stats = {
+        "llm_hallucination": (4, 18, 8.4),
+        "rag_attribution": (3, 16, 7.6),
+        "vehicle_stability": (2, 12, 6.8),
+        "heavy_truck_brake": (3, 14, 7.9),
+        "autonomous_driving": (4, 20, 9.2),
+        "battery_thermal": (2, 11, 6.3),
+    }
+    return stats.get(key, (3, 13, 7.2))
 
 
 def _normalize(text: str) -> str:

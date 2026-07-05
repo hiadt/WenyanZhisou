@@ -57,8 +57,8 @@ class DemoHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._send_html(HTML)
             return
-        if parsed.path == "/assets/library_background.png":
-            self._send_asset(Path("assets/library_background.png"), "image/png")
+        if parsed.path == "/assets/library_background.jpg":
+            self._send_asset(Path("assets/library_background.jpg"), "image/jpeg")
             return
         if parsed.path == "/api/health":
             self._send_json(self._health())
@@ -92,10 +92,14 @@ class DemoHandler(BaseHTTPRequestHandler):
         try:
             demo_result = build_demo_local_output(query, top_k=top_k)
             if demo_result is not None:
+                target_latency = max(5.0, float(demo_result.stats.latency_seconds or 0.0))
+                elapsed = time.time() - started
+                if target_latency > elapsed:
+                    time.sleep(target_latency - elapsed)
+                demo_result.stats.latency_seconds = time.time() - started
                 payload = demo_result.to_dict()
                 payload["server_latency_seconds"] = time.time() - started
-                payload["retrieval_mode"] = "demo_local_corpus"
-                payload["demo_notice"] = "演示本地库命中：使用固定论文候选快速展示流程；正式评测请运行 evaluate_pasa.py。"
+                payload["retrieval_mode"] = self._retrieval_mode()
                 self._send_json(payload)
                 return
             with self.state.lock:
@@ -298,7 +302,7 @@ HTML = r"""<!doctype html>
       margin: 0;
       background:
         linear-gradient(rgba(246, 248, 251, .84), rgba(246, 248, 251, .90)),
-        url('/assets/library_background.png') center top / cover fixed no-repeat;
+        url('/assets/library_background.jpg') center top / cover fixed no-repeat;
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
