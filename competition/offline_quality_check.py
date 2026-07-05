@@ -197,7 +197,7 @@ def check_formal_eval_defaults() -> None:
     assert cfg.ranking.llm_verifier_batch_size >= 20
     assert cfg.budget.max_llm_calls_per_query == 4
     assert cfg.retrieval.max_candidates == 220
-    assert cfg.retrieval.pasa_title_limit >= 100
+    assert cfg.retrieval.pasa_title_limit >= 120
     assert cfg.retrieval.max_rounds == 1
     assert cfg.retrieval.citation_expand_limit == 0
     assert cfg.budget.max_api_calls_per_query == 36

@@ -92,7 +92,7 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
 
     config.retrieval.per_query = min(config.retrieval.per_query, 18)
     config.retrieval.max_candidates = 220
-    config.retrieval.pasa_title_limit = max(config.retrieval.pasa_title_limit, 100)
+    config.retrieval.pasa_title_limit = max(config.retrieval.pasa_title_limit, 120)
     config.retrieval.max_rounds = 1
     config.retrieval.citation_expand_seeds = 0
     config.retrieval.citation_expand_limit = 0
