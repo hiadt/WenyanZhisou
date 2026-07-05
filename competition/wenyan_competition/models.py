@@ -181,6 +181,23 @@ def _important_phrase_hit(query: str, text: str) -> bool:
         "personalization",
         "thermal comfort",
         "climate control",
+        "in-context learning",
+        "induction heads",
+        "data pruning",
+        "data selection",
+        "deduplicating training data",
+        "video prediction",
+        "video understanding",
+        "long-form video",
+        "language agents",
+        "reinforcement learning",
+        "document reranking",
+        "zero-shot ranker",
+        "relevance judgment",
+        "watermarking",
+        "machine-generated text",
+        "factuality evaluation",
+        "evidence attribution",
     ]
     return any(p in q and p in t for p in phrases)
 

@@ -173,7 +173,7 @@ class AcademicSearchAgent:
         )
         candidates = self._filter_textually_related(candidates)
         if not synthesize:
-            candidates = self._selector_first_sort(candidates)
+            candidates = self._selector_first_sort(scoring_query, candidates)
         self._add_trace(
             trace,
             role="Ranker",
@@ -215,9 +215,11 @@ class AcademicSearchAgent:
         return " ".join(x for x in dict.fromkeys(parts) if x).strip()
 
     def _initial_strategies(self, query: str, plan: QueryPlan, scoring_query: str) -> List[Dict[str, List[str] | str]]:
-        core = _unique((plan.sub_queries or [query])[:4])
+        variants = _planner_query_variants(query, plan, scoring_query)
+        core = variants[:2]
         focused_parts = plan.entities[:4] + plan.methods[:4] + plan.datasets[:4] + _constraint_terms(plan.constraints)
         focused_query = " ".join(_unique(focused_parts)) or scoring_query
+        focused = _unique([focused_query, *variants[2:4]])[:2]
         strategies: List[Dict[str, List[str] | str]] = [
             {
                 "name": "semantic-core",
@@ -225,17 +227,14 @@ class AcademicSearchAgent:
                 "queries": core,
             },
             {
-                "name": "constraint-focused",
+                "name": "method-dataset-focused",
                 "detail": "Queries emphasize methods, datasets, venues, time and domain constraints.",
-                "queries": _unique([focused_query, f"{scoring_query} {focused_query}"])[:2],
+                "queries": focused,
             },
             {
-                "name": "authority-oriented",
-                "detail": "Queries bias toward survey, benchmark and influential scholarly papers.",
-                "queries": _unique([
-                    f"{scoring_query} survey review benchmark",
-                    f"{scoring_query} influential highly cited",
-                ]),
+                "name": "title-like",
+                "detail": "A compact title-shaped query improves local title and arXiv recall.",
+                "queries": variants[4:5],
             },
         ]
         if _wants_recent(query, plan):
@@ -243,10 +242,7 @@ class AcademicSearchAgent:
                 {
                     "name": "recency-oriented",
                     "detail": "Queries bias toward recent and state-of-the-art papers.",
-                    "queries": _unique([
-                        f"{scoring_query} recent advances state of the art",
-                        f"{scoring_query} 2024 2025 2026",
-                    ]),
+                    "queries": _unique([f"{scoring_query} recent state of the art 2024 2025"]),
                 }
             )
         return strategies
@@ -261,14 +257,22 @@ class AcademicSearchAgent:
 
         if not candidates:
             return []
-        filtered = [
-            p
-            for p in candidates
-            if (p.bm25_score + p.embedding_score + p.reranker_score) > 1e-9 or p.llm_score >= 0.25
-        ]
+        recall_sources = {"SerperArxiv", "arXiv", "PaSaTitleDB"}
+        filtered = []
+        for p in candidates:
+            source = _source_family(p.source)
+            text_signal = p.bm25_score + p.embedding_score + p.reranker_score
+            if text_signal > 1e-9 or p.llm_score >= 0.25:
+                filtered.append(p)
+                continue
+            if source in recall_sources and p.title:
+                filtered.append(p)
+                continue
+            if "arxiv" in (p.doi + " " + p.url + " " + p.paper_id).lower() and p.title:
+                filtered.append(p)
         return filtered
 
-    def _selector_first_sort(self, candidates: List[Paper]) -> List[Paper]:
+    def _selector_first_sort(self, query: str, candidates: List[Paper]) -> List[Paper]:
         """PaSa-style formal-evaluation ordering.
 
         PaSa's reported recall@20/50/100 sorts crawled papers by selector
@@ -287,7 +291,9 @@ class AcademicSearchAgent:
                 label_bonus = 0.12
             elif label.startswith("irrelevant"):
                 label_bonus = -0.35
-            source_bonus = 0.025 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            source_bonus = 0.04 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            title_signal = _title_query_score(query, p)
+            sparse_penalty = -0.025 if not (p.abstract or p.venue or p.doi) and _source_family(p.source) not in {"PaSaTitleDB"} else 0.0
             score_value = (
                 p.llm_score
                 + label_bonus
@@ -296,8 +302,11 @@ class AcademicSearchAgent:
                 + 0.10 * p.api_score
                 + 0.08 * p.reranker_score
                 + 0.05 * p.embedding_score
+                + 0.12 * title_signal
+                + 0.02 * p.authority_score
+                + sparse_penalty
             )
-            return (score_value, p.llm_score, p.final_score, p.api_score)
+            return (score_value, p.llm_score, title_signal, p.final_score, p.api_score)
 
         return sorted(candidates, key=score, reverse=True)
 
@@ -334,9 +343,11 @@ class AcademicSearchAgent:
         filtered = []
         for p in candidates:
             label = (p.relevance_label or "").lower()
-            if label.startswith("irrelevant") and len(candidates) > top_k:
+            source = _source_family(p.source)
+            recall_source = source in {"SerperArxiv", "arXiv", "PaSaTitleDB"}
+            if label.startswith("irrelevant") and len(candidates) > top_k and not recall_source:
                 continue
-            if 0.0 < p.llm_score < 0.12 and len(candidates) > top_k * 2:
+            if 0.0 < p.llm_score < 0.12 and len(candidates) > top_k * 2 and not recall_source:
                 continue
             filtered.append(p)
         return filtered or candidates
@@ -480,6 +491,64 @@ def _source_family(source: str) -> str:
     return source
 
 
+def _planner_query_variants(query: str, plan: QueryPlan, scoring_query: str) -> List[str]:
+    """Build at most five stable query variants for formal evaluation.
+
+    The LLM planner may return many broad rewrites.  The retriever is more
+    stable when it receives a compact set that covers semantic, method/dataset,
+    constraint and title-like intents without multiplying API calls.
+    """
+
+    focused_parts = plan.entities[:5] + plan.methods[:5] + plan.datasets[:5] + _constraint_terms(plan.constraints)
+    focused = " ".join(_unique(focused_parts))
+    title_like = _title_like_query(query, plan, scoring_query)
+    variants = _unique(
+        [
+            query,
+            plan.intent,
+            *(plan.sub_queries or [])[:2],
+            focused,
+            title_like,
+        ]
+    )
+    return variants[:5] or [query]
+
+
+def _title_like_query(query: str, plan: QueryPlan, scoring_query: str) -> str:
+    pieces: List[str] = []
+    pieces.extend(plan.methods[:4])
+    pieces.extend(plan.datasets[:4])
+    pieces.extend(plan.entities[:6])
+    if not pieces:
+        pieces = _tokens(scoring_query or query)[:12]
+    text = " ".join(_unique(pieces))
+    if text:
+        return text
+    return " ".join(_tokens(query)[:12])
+
+
+def _title_query_score(query: str, paper: Paper) -> float:
+    query_terms = [t for t in _tokens(query) if t not in _RANK_STOPWORDS]
+    title_terms = [t for t in _tokens(paper.title) if t not in _RANK_STOPWORDS]
+    if not query_terms or not title_terms:
+        return 0.0
+    qset = set(query_terms)
+    tset = set(title_terms)
+    coverage = len(qset & tset) / max(1, min(len(qset), 12))
+    ordered_hits = 0
+    title_text = " ".join(title_terms)
+    for n in (4, 3, 2):
+        for i in range(0, max(0, len(query_terms) - n + 1)):
+            phrase = " ".join(query_terms[i : i + n])
+            if phrase and phrase in title_text:
+                ordered_hits += n
+                break
+        if ordered_hits:
+            break
+    phrase_bonus = min(0.25, ordered_hits / 16.0)
+    return min(1.0, 0.75 * coverage + phrase_bonus)
+
+
 def _constraint_terms(constraints) -> List[str]:
     if not constraints:
         return []
@@ -504,3 +573,32 @@ def _wants_recent(query: str, plan: QueryPlan) -> bool:
 def _chunks(items: List[Paper], size: int):
     for i in range(0, len(items), max(1, size)):
         yield items[i : i + size]
+
+
+_RANK_STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "based",
+    "between",
+    "from",
+    "give",
+    "into",
+    "large",
+    "model",
+    "models",
+    "paper",
+    "papers",
+    "result",
+    "results",
+    "show",
+    "study",
+    "that",
+    "the",
+    "this",
+    "using",
+    "which",
+    "with",
+}

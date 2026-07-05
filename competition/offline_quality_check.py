@@ -33,6 +33,7 @@ def main() -> None:
         check_llm_planner_loose_fields,
         check_pasa_gold_matching,
         check_pasa_title_retriever,
+        check_topic_expansion_helpers,
         check_local_search_can_skip_online_sources,
         check_arxiv_query_helpers,
         check_serper_arxiv_helpers,
@@ -146,6 +147,14 @@ def check_pasa_title_retriever() -> None:
     assert any(p.paper_id == "2309.04564" for p in papers)
 
 
+def check_topic_expansion_helpers() -> None:
+    video_query = "papers about latent video prediction with transformers"
+    assert any("video" in q.lower() for q in _arxiv_queries(video_query))
+    assert any("site:arxiv.org/abs" in q for q in _serper_arxiv_queries(video_query))
+    ranker_query = "large language models for zero-shot document reranking"
+    assert any("rank" in q.lower() or "rerank" in q.lower() for q in _serper_arxiv_queries(ranker_query))
+
+
 def check_local_search_can_skip_online_sources() -> None:
     tmp = ROOT / "runs" / "tiny_id2paper.json"
     tmp.parent.mkdir(parents=True, exist_ok=True)
@@ -193,11 +202,12 @@ def check_serper_arxiv_helpers() -> None:
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
-    assert cfg.ranking.llm_verify_top_n == 60
-    assert cfg.ranking.llm_verifier_batch_size >= 20
+    assert cfg.ranking.llm_verify_top_n == 50
+    assert cfg.ranking.llm_verifier_batch_size >= 25
     assert cfg.budget.max_llm_calls_per_query == 4
-    assert cfg.retrieval.max_candidates == 220
-    assert cfg.retrieval.pasa_title_limit >= 120
+    assert cfg.retrieval.max_candidates == 260
+    assert cfg.retrieval.pasa_title_limit >= 180
+    assert cfg.retrieval.pasa_title_min_score <= 0.08
     assert cfg.retrieval.max_rounds == 1
     assert cfg.retrieval.citation_expand_limit == 0
     assert cfg.budget.max_api_calls_per_query == 36

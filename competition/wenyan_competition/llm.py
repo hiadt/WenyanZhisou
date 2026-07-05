@@ -73,8 +73,12 @@ You are an academic search query planner. Parse the user's complex research quer
 Return ONLY valid JSON with these fields:
 intent, entities, methods, datasets, constraints, sub_queries, negative_terms.
 If the user query is Chinese, translate the academic meaning into English first.
-Generate 4-8 precise English academic search queries, including common synonyms,
-technical names, abbreviations, and biomedical/engineering terminology when useful.
+Generate 3-5 precise English academic search queries. Cover these roles when
+possible without being verbose: semantic_core, method_focused, dataset_focused,
+constraint_focused, title_like. Include common synonyms, technical names,
+abbreviations, and biomedical/engineering terminology when useful.
+Do not generate broad generic survey queries unless the user explicitly asks
+for surveys, reviews, benchmarks, or overviews.
 
 User query:
 {query}
@@ -92,7 +96,7 @@ User query:
                 methods=_as_list(obj.get("methods"))[:12],
                 datasets=_as_list(obj.get("datasets"))[:12],
                 constraints=_as_dict(obj.get("constraints")),
-                sub_queries=_as_list(obj.get("sub_queries"))[:8] or [query],
+                sub_queries=_as_list(obj.get("sub_queries"))[:5] or [query],
                 negative_terms=_as_list(obj.get("negative_terms"))[:12],
             )
             return _merge_with_heuristic(query, plan)
@@ -358,7 +362,7 @@ def _merge_with_heuristic(query: str, plan: QueryPlan) -> QueryPlan:
     merged_entities = list(dict.fromkeys((plan.entities or []) + fallback.entities))
     if not plan.intent or plan.intent.strip() == query.strip():
         plan.intent = fallback.intent
-    plan.sub_queries = merged_sub_queries[:10]
+    plan.sub_queries = merged_sub_queries[:5]
     plan.entities = merged_entities[:16]
     return plan
 
@@ -397,7 +401,7 @@ def heuristic_plan(query: str) -> QueryPlan:
         original_query=q,
         intent=cjk_expansions[0] if cjk_expansions else q,
         entities=entities[:12],
-        sub_queries=list(dict.fromkeys([x for x in sub if x]))[:8],
+        sub_queries=list(dict.fromkeys([x for x in sub if x]))[:5],
     )
 
 

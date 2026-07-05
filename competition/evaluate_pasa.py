@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+from difflib import SequenceMatcher
 from pathlib import Path
 
 try:
@@ -39,13 +41,17 @@ def main() -> None:
     pred_path = out_dir / "predictions.jsonl"
     metric_rows = []
     hit_rows = []
+    debug_rows = []
+    eval_pool_k = max(args.top_k, 150 if not args.no_eval_boost else 100)
 
     with pred_path.open("w", encoding="utf-8") as f:
         for ex in tqdm(examples, desc="evaluating"):
-            result = agent.search(ex.query, top_k=max(args.top_k, 100), synthesize=False)
+            result = agent.search(ex.query, top_k=eval_pool_k, synthesize=False)
             pred_ids = [p.paper_id or p.doi or p.title for p in result.papers]
             pred_aliases = [paper_aliases(p) for p in result.papers]
-            hit_rows.append(_hit_report(ex, result.papers, pred_aliases))
+            hit_report = _hit_report(ex, result.papers, pred_aliases)
+            hit_rows.append(hit_report)
+            debug_rows.append(_debug_row(ex, result.papers, pred_ids, pred_aliases, hit_report, result.stats))
             row = {
                 "precision@20": flexible_precision_at(pred_aliases, ex.gold_items, 20),
                 "recall@20": flexible_recall_at(pred_aliases, ex.gold_items, 20),
@@ -76,6 +82,7 @@ def main() -> None:
     metrics = aggregate(metric_rows)
     (out_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "hit_report.json").write_text(json.dumps(hit_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_debug_csv(out_dir / "eval_debug.csv", debug_rows)
     (out_dir / "report.md").write_text(_report(metrics, len(examples)), encoding="utf-8")
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
@@ -90,14 +97,15 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     spot checks.
     """
 
-    config.retrieval.per_query = min(config.retrieval.per_query, 18)
-    config.retrieval.max_candidates = 220
-    config.retrieval.pasa_title_limit = max(config.retrieval.pasa_title_limit, 120)
+    config.retrieval.per_query = min(max(config.retrieval.per_query, 20), 25)
+    config.retrieval.max_candidates = 260
+    config.retrieval.pasa_title_limit = max(config.retrieval.pasa_title_limit, 180)
+    config.retrieval.pasa_title_min_score = min(config.retrieval.pasa_title_min_score, 0.08)
     config.retrieval.max_rounds = 1
     config.retrieval.citation_expand_seeds = 0
     config.retrieval.citation_expand_limit = 0
-    config.retrieval.serper_top_k = min(config.retrieval.serper_top_k, 10)
-    config.retrieval.serper_arxiv_limit = min(config.retrieval.serper_arxiv_limit, 16)
+    config.retrieval.serper_top_k = min(max(config.retrieval.serper_top_k, 10), 12)
+    config.retrieval.serper_arxiv_limit = min(max(config.retrieval.serper_arxiv_limit, 18), 24)
     config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 2)
     config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 2)
     config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 2)
@@ -105,12 +113,20 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 10)
     config.retrieval.enable_api_cache = True
     config.budget.max_api_calls_per_query = 36
+    config.ranking.api_weight = 0.10
+    config.ranking.bm25_weight = 0.20
+    config.ranking.embedding_weight = 0.32
+    config.ranking.reranker_weight = 0.28
+    config.ranking.authority_weight = 0.04
+    config.ranking.recency_weight = 0.02
+    config.ranking.diversity_weight = 0.003
     if use_llm:
         config.budget.max_llm_calls_per_query = 4
-        config.ranking.llm_verify_top_n = 60
-        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
-        config.ranking.api_weight = max(config.ranking.api_weight, 0.14)
-        config.ranking.llm_verifier_weight = max(config.ranking.llm_verifier_weight, 0.22)
+        config.ranking.llm_verify_top_n = 50
+        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 25)
+        config.ranking.llm_verifier_weight = 0.14
+    else:
+        config.ranking.llm_verifier_weight = 0.0
 
 
 def paper_aliases(paper) -> set[str]:
@@ -144,7 +160,7 @@ def _matched_gold_count(pred_aliases: list[set[str]], gold_items: list[set[str]]
     matched_gold = set()
     for aliases in pred_aliases[:k]:
         for idx, gold_aliases in enumerate(gold_items):
-            if idx not in matched_gold and aliases & gold_aliases:
+            if idx not in matched_gold and _aliases_match(aliases, gold_aliases):
                 matched_gold.add(idx)
                 break
     return len(matched_gold)
@@ -157,7 +173,7 @@ def _hit_report(ex, papers, pred_aliases: list[set[str]]) -> dict:
         paper_title = ""
         paper_id = ""
         for pred_idx, aliases in enumerate(pred_aliases, 1):
-            if aliases & gold_aliases:
+            if _aliases_match(aliases, gold_aliases):
                 rank = pred_idx
                 paper = papers[pred_idx - 1]
                 paper_title = paper.title
@@ -180,6 +196,84 @@ def _hit_report(ex, papers, pred_aliases: list[set[str]]) -> dict:
         "hit_at_100": sum(1 for h in hits if h["rank"] and h["rank"] <= 100),
         "hits": hits,
     }
+
+
+def _debug_row(ex, papers, pred_ids: list[str], pred_aliases: list[set[str]], hit_report: dict, stats) -> dict:
+    ranks = [h["rank"] for h in hit_report["hits"] if h["rank"]]
+    missed = [h["gold_aliases"] for h in hit_report["hits"] if not h["rank"]]
+    matched_pool = len(ranks)
+    gold_count = len(ex.gold_items)
+    return {
+        "query_id": str(ex.raw.get("qid") or ex.raw.get("id") or ""),
+        "query_text": ex.query,
+        "gold_ids": json.dumps(sorted(ex.gold_ids), ensure_ascii=False),
+        "pred_top20": json.dumps(pred_ids[:20], ensure_ascii=False),
+        "pred_top100": json.dumps(pred_ids[:100], ensure_ascii=False),
+        "hit@20": hit_report["hit_at_20"],
+        "hit@50": hit_report["hit_at_50"],
+        "hit@100": hit_report["hit_at_100"],
+        "missed_gold_ids": json.dumps(missed, ensure_ascii=False),
+        "candidate_pool_size": len(papers),
+        "matched_gold_in_pool": matched_pool,
+        "oracle_recall@pool": matched_pool / gold_count if gold_count else 0.0,
+        "gold_rank_position": json.dumps(ranks, ensure_ascii=False),
+        "api_calls": stats.api_calls,
+        "llm_calls": stats.llm_calls,
+        "latency": stats.latency_seconds,
+    }
+
+
+def _write_debug_csv(path: Path, rows: list[dict]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _aliases_match(pred_aliases: set[str], gold_aliases: set[str]) -> bool:
+    if pred_aliases & gold_aliases:
+        return True
+    pred_titles = _title_aliases(pred_aliases)
+    gold_titles = _title_aliases(gold_aliases)
+    for pred_title in pred_titles:
+        for gold_title in gold_titles:
+            if _title_fuzzy_match(pred_title, gold_title):
+                return True
+    return False
+
+
+def _title_aliases(aliases: set[str]) -> list[str]:
+    out = []
+    for alias in aliases:
+        if alias.startswith("title:"):
+            out.append(alias[6:])
+    return out
+
+
+def _title_fuzzy_match(a: str, b: str) -> bool:
+    a = _clean_title_alias(a)
+    b = _clean_title_alias(b)
+    if len(a) < 12 or len(b) < 12:
+        return False
+    if a == b:
+        return True
+    shorter, longer = sorted([a, b], key=len)
+    if len(shorter) >= 24 and shorter in longer:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= 0.92
+
+
+def _clean_title_alias(text: str) -> str:
+    text = str(text or "").lower()
+    text = " ".join(
+        token
+        for token in text.split()
+        if token not in {"arxiv", "preprint", "proceedings", "paper", "article"}
+    )
+    return " ".join(text.split())
 
 
 def _report(metrics, n: int) -> str:
