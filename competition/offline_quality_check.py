@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from wenyan_competition.config import RetrievalConfig, load_config
+from wenyan_competition.config import RankingConfig, RetrievalConfig, SmallModelConfig, load_config
 from wenyan_competition.dataset import extract_gold_items
 from wenyan_competition.llm import _as_dict, _as_list, heuristic_plan, heuristic_synthesis
 from wenyan_competition.retrievers import (
@@ -16,6 +16,7 @@ from wenyan_competition.retrievers import (
     _openalex_api_work_url,
     _serper_arxiv_queries,
 )
+from wenyan_competition.ranker import CompetitionRanker, _rank_positions
 from wenyan_competition.schema import Paper
 from evaluate_pasa import _apply_formal_eval_defaults, flexible_recall_at, paper_aliases
 
@@ -38,6 +39,8 @@ def main() -> None:
         check_arxiv_query_helpers,
         check_serper_arxiv_helpers,
         check_formal_eval_defaults,
+        check_llm_rescore_skips_neural_models,
+        check_rrf_tied_scores_share_rank,
         check_openalex_url_normalization,
         check_citation_fetch_warnings_are_quiet,
         check_smoke_command,
@@ -203,14 +206,14 @@ def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
     assert cfg.ranking.llm_verify_top_n == 30
-    assert 15 <= cfg.ranking.llm_verifier_batch_size <= 20
+    assert cfg.ranking.llm_verifier_batch_size == 15
     assert cfg.budget.max_llm_calls_per_query == 3
-    assert 28 <= cfg.retrieval.per_query <= 35
-    assert 140 <= cfg.retrieval.max_candidates <= 180
-    assert cfg.retrieval.pasa_title_limit >= 140
-    assert cfg.retrieval.pasa_title_min_score <= 0.085
+    assert cfg.retrieval.per_query == 38
+    assert cfg.retrieval.max_candidates == 260
+    assert cfg.retrieval.pasa_title_limit == 260
+    assert cfg.retrieval.pasa_title_min_score == 0.07
     assert cfg.retrieval.enable_adaptive_second_pass is True
-    assert cfg.retrieval.min_candidate_pool_size == 120
+    assert cfg.retrieval.min_candidate_pool_size == 150
     assert cfg.retrieval.max_rounds == 1
     assert cfg.retrieval.citation_expand_seeds == 0
     assert cfg.retrieval.citation_expand_limit == 0
@@ -219,11 +222,48 @@ def check_formal_eval_defaults() -> None:
     assert cfg.budget.max_latency_seconds <= 70
     assert cfg.ranking.use_rrf is True
     assert cfg.ranking.rrf_k == 60
-    assert 80 <= cfg.ranking.rerank_candidate_limit <= 100
-    assert cfg.retrieval.serper_query_limit <= 1
-    assert cfg.retrieval.serper_query_variants <= 1
-    assert cfg.retrieval.arxiv_query_limit <= 1
-    assert cfg.retrieval.arxiv_query_variants <= 1
+    assert cfg.ranking.rerank_candidate_limit == 120
+    assert cfg.ranking.diversity_weight == 0.0
+    assert cfg.retrieval.serper_query_limit == 1
+    assert cfg.retrieval.serper_query_variants == 1
+    assert cfg.retrieval.arxiv_query_limit == 1
+    assert cfg.retrieval.arxiv_query_variants == 1
+
+
+def check_llm_rescore_skips_neural_models() -> None:
+    ranker = CompetitionRanker(RankingConfig(), SmallModelConfig(), force_fallback_models=True)
+    papers = [
+        Paper(
+            paper_id="P1",
+            title="Relevant paper",
+            api_score=0.6,
+            bm25_score=0.7,
+            embedding_score=0.8,
+            reranker_score=0.9,
+            llm_score=0.9,
+            relevance_label="high",
+        ),
+        Paper(
+            paper_id="P2",
+            title="Partial paper",
+            api_score=0.5,
+            bm25_score=0.4,
+            embedding_score=0.3,
+            reranker_score=0.2,
+            llm_score=0.4,
+            relevance_label="partial",
+        ),
+    ]
+    ranker.embedding.score = lambda *_: (_ for _ in ()).throw(AssertionError("embedding reran"))
+    ranker.reranker.score = lambda *_: (_ for _ in ()).throw(AssertionError("reranker reran"))
+    rescored = ranker.rescore_existing("relevant paper", papers)
+    assert rescored[0].paper_id == "P1"
+    assert "embedding_seconds" not in ranker.last_stage_times
+    assert "reranker_seconds" not in ranker.last_stage_times
+
+
+def check_rrf_tied_scores_share_rank() -> None:
+    assert _rank_positions([0.9, 0.4, 0.4, 0.0, 0.0]) == [1, 2, 2, 4, 4]
 
 
 def check_openalex_url_normalization() -> None:

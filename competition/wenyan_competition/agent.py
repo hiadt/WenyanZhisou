@@ -170,7 +170,12 @@ class AcademicSearchAgent:
             : self.config.retrieval.max_candidates
         ]
         verify_n = min(self.config.ranking.llm_verify_top_n, len(candidates))
-        if self.llm_client and self.llm_client.calls < self.config.budget.max_llm_calls_per_query:
+        verifier_batches = 0
+        if (
+            self.llm_client is not None
+            and verify_n > 0
+            and self.llm_client.calls < self.config.budget.max_llm_calls_per_query
+        ):
             selector_candidates = self._selector_candidates(candidates, verify_n)
             self._add_trace(
                 trace,
@@ -189,6 +194,7 @@ class AcademicSearchAgent:
                     break
                 with _timer(stage_times, "llm_verifier_seconds"):
                     self.verifier.verify(query, batch)
+                verifier_batches += 1
                 self._add_trace(
                     trace,
                     role="Selector",
@@ -198,7 +204,24 @@ class AcademicSearchAgent:
                     candidates_after=len([p for p in batch if p.llm_score > 0]),
                     selected_count=len(batch),
                 )
-            candidates = self._rank_candidates(scoring_query, candidates, stage_times)
+                if self.llm_client.disabled:
+                    break
+            candidates = self._rescore_candidates(scoring_query, candidates, stage_times)
+        if verifier_batches == 0:
+            self._add_trace(
+                trace,
+                role="Selector",
+                action="LLM verifier skipped",
+                detail=(
+                    f"llm_is_none={self.llm_client is None}; verify_n={verify_n}; "
+                    f"llm_disabled={bool(self.llm_client and self.llm_client.disabled)}; "
+                    f"calls={self.llm_client.calls if self.llm_client else 0}; "
+                    f"max_calls={self.config.budget.max_llm_calls_per_query}"
+                ),
+                candidates_before=len(candidates),
+                candidates_after=len(candidates),
+                selected_count=0,
+            )
 
         before_filter = len(candidates)
         with _timer(stage_times, "merge_rank_seconds"):
@@ -354,6 +377,17 @@ class AcademicSearchAgent:
         stage_times: Dict[str, float],
     ) -> List[Paper]:
         ranked = self.ranker.pre_rank(scoring_query, candidates)
+        for key, value in self.ranker.last_stage_times.items():
+            stage_times[key] = stage_times.get(key, 0.0) + value
+        return ranked
+
+    def _rescore_candidates(
+        self,
+        scoring_query: str,
+        candidates: List[Paper],
+        stage_times: Dict[str, float],
+    ) -> List[Paper]:
+        ranked = self.ranker.rescore_existing(scoring_query, candidates)
         for key, value in self.ranker.last_stage_times.items():
             stage_times[key] = stage_times.get(key, 0.0) + value
         return ranked

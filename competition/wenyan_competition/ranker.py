@@ -36,47 +36,10 @@ class CompetitionRanker:
         with _timer(self.last_stage_times, "reranker_seconds"):
             rerank = self.reranker.score(query, head)
         with _timer(self.last_stage_times, "merge_rank_seconds"):
-            api = [p.api_score for p in head]
-            bm25 = [p.bm25_score for p in head]
-            llm = [p.llm_score for p in head]
-
-            weighted_scores = []
             for i, p in enumerate(head):
                 p.embedding_score = emb[i]
                 p.reranker_score = rerank[i]
-                weighted_scores.append(
-                    self.config.api_weight * p.api_score
-                    + self.config.bm25_weight * p.bm25_score
-                    + self.config.embedding_weight * p.embedding_score
-                    + self.config.reranker_weight * p.reranker_score
-                    + self.config.llm_verifier_weight * p.llm_score
-                    + self.config.authority_weight * p.authority_score
-                    + self.config.recency_weight * p.recency_score
-                    + _intent_alignment_bonus(query, p)
-                )
-
-            if self.config.use_rrf:
-                rrf_scores = _rrf_fusion(
-                    {
-                        "api": api,
-                        "bm25": bm25,
-                        "embedding": emb,
-                        "reranker": rerank,
-                        "llm": llm,
-                    },
-                    k=max(1, self.config.rrf_k),
-                )
-                fused_scores = _normalize(rrf_scores)
-                weighted_norm = _normalize(weighted_scores)
-                for i, p in enumerate(head):
-                    p.final_score = (
-                        0.70 * fused_scores[i]
-                        + 0.30 * weighted_norm[i]
-                        + _selector_confidence_bonus(p)
-                    )
-            else:
-                for i, p in enumerate(head):
-                    p.final_score = weighted_scores[i] + _selector_confidence_bonus(p)
+            self._fuse_existing_signals(query, head)
 
             for p in tail:
                 p.embedding_score = 0.0
@@ -84,6 +47,64 @@ class CompetitionRanker:
                 p.final_score = max(0.0, p.final_score - 0.03)
 
             return _diversified_sort(head + tail, self.config.diversity_weight)
+
+    def rescore_existing(self, query: str, papers: List[Paper]) -> List[Paper]:
+        """Fuse updated LLM judgments without rerunning neural models.
+
+        The verifier only changes ``llm_score`` and ``relevance_label``.  The
+        expensive embedding and cross-encoder outputs are already stored on
+        each paper, so a second model pass would add latency without adding a
+        new signal.
+        """
+
+        if not papers:
+            return []
+        self.last_stage_times = {}
+        with _timer(self.last_stage_times, "merge_rank_seconds"):
+            self._fuse_existing_signals(query, papers)
+            return _diversified_sort(papers, self.config.diversity_weight)
+
+    def _fuse_existing_signals(self, query: str, papers: List[Paper]) -> None:
+        api = [p.api_score for p in papers]
+        bm25 = [p.bm25_score for p in papers]
+        embedding = [p.embedding_score for p in papers]
+        reranker = [p.reranker_score for p in papers]
+        llm = [p.llm_score for p in papers]
+        weighted_scores = [
+            self.config.api_weight * p.api_score
+            + self.config.bm25_weight * p.bm25_score
+            + self.config.embedding_weight * p.embedding_score
+            + self.config.reranker_weight * p.reranker_score
+            + self.config.llm_verifier_weight * p.llm_score
+            + self.config.authority_weight * p.authority_score
+            + self.config.recency_weight * p.recency_score
+            + _intent_alignment_bonus(query, p)
+            for p in papers
+        ]
+
+        if self.config.use_rrf:
+            rrf_scores = _rrf_fusion(
+                {
+                    "api": api,
+                    "bm25": bm25,
+                    "embedding": embedding,
+                    "reranker": reranker,
+                    "llm": llm,
+                },
+                k=max(1, self.config.rrf_k),
+            )
+            fused_scores = _normalize(rrf_scores)
+            weighted_norm = _normalize(weighted_scores)
+            for i, paper in enumerate(papers):
+                paper.final_score = (
+                    0.70 * fused_scores[i]
+                    + 0.30 * weighted_norm[i]
+                    + _selector_confidence_bonus(paper)
+                )
+            return
+
+        for i, paper in enumerate(papers):
+            paper.final_score = weighted_scores[i] + _selector_confidence_bonus(paper)
 
     def pre_rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         """Cheap intermediate ordering without embedding/reranker inference."""
@@ -154,7 +175,14 @@ def _rrf_fusion(signals: dict[str, List[float]], k: int = 60) -> List[float]:
 def _rank_positions(values: List[float]) -> List[int]:
     ordered = sorted(range(len(values)), key=lambda i: values[i], reverse=True)
     ranks = [len(values)] * len(values)
-    for rank, idx in enumerate(ordered, 1):
+    previous_value = None
+    tied_rank = 1
+    for position, idx in enumerate(ordered, 1):
+        value = values[idx]
+        if previous_value is None or value != previous_value:
+            tied_rank = position
+            previous_value = value
+        rank = tied_rank
         ranks[idx] = rank
     return ranks
 
