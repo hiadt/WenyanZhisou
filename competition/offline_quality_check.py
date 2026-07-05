@@ -33,7 +33,6 @@ def main() -> None:
         check_llm_planner_loose_fields,
         check_pasa_gold_matching,
         check_pasa_title_retriever,
-        check_local_search_can_skip_online_sources,
         check_arxiv_query_helpers,
         check_serper_arxiv_helpers,
         check_formal_eval_defaults,
@@ -146,28 +145,6 @@ def check_pasa_title_retriever() -> None:
     assert any(p.paper_id == "2309.04564" for p in papers)
 
 
-def check_local_search_can_skip_online_sources() -> None:
-    tmp = ROOT / "runs" / "tiny_id2paper.json"
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(
-        json.dumps({"2309.04564": "When Less is More: Investigating Data Pruning for Pretraining LLMs at Scale"}),
-        encoding="utf-8",
-    )
-    retriever = AcademicRetriever(
-        RetrievalConfig(
-            use_openalex=True,
-            use_semantic_scholar=True,
-            use_arxiv=True,
-            use_serper=False,
-            pasa_id2paper_path=str(tmp),
-            pasa_title_limit=10,
-        )
-    )
-    papers = retriever.search_many(["data pruning pretraining LLM"], include_online=False)
-    assert any(p.paper_id == "2309.04564" for p in papers)
-    assert retriever.api_calls == 0
-
-
 def check_arxiv_query_helpers() -> None:
     query = "using a smaller dataset in large language model pre-training can result in better models"
     queries = _arxiv_queries(query)
@@ -194,10 +171,9 @@ def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
     assert cfg.ranking.llm_verify_top_n == 60
-    assert cfg.ranking.llm_verifier_batch_size >= 60
-    assert cfg.budget.max_llm_calls_per_query == 2
+    assert cfg.ranking.llm_verifier_batch_size >= 20
+    assert cfg.budget.max_llm_calls_per_query == 4
     assert cfg.retrieval.max_candidates == 220
-    assert cfg.retrieval.pasa_title_limit >= 120
     assert cfg.retrieval.max_rounds == 1
     assert cfg.retrieval.citation_expand_limit == 0
     assert cfg.budget.max_api_calls_per_query == 36

@@ -81,13 +81,10 @@ class AcademicSearchAgent:
                 queries = list(dict.fromkeys(queries + evolved))
 
             for strategy in active_strategies:
-                all_strategy_queries = _unique([q for q in strategy["queries"] if q])
-                if not all_strategy_queries:
-                    continue
-                before = len(candidates)
-                strategy_queries = self._budgeted_queries(all_strategy_queries)
+                strategy_queries = self._budgeted_queries(strategy["queries"])
                 if not strategy_queries:
                     continue
+                before = len(candidates)
                 found = self.retriever.search_many(strategy_queries)
                 candidates = deduplicate(candidates + found)
                 candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
@@ -96,7 +93,7 @@ class AcademicSearchAgent:
                     role="Crawler",
                     action=f"round {round_id + 1}: {strategy['name']}",
                     detail=strategy["detail"],
-                    queries=all_strategy_queries,
+                    queries=strategy_queries,
                     candidates_before=before,
                     candidates_after=len(candidates),
                     selected_count=len(found),
