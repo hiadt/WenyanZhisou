@@ -42,7 +42,7 @@ def main() -> None:
     metric_rows = []
     hit_rows = []
     debug_rows = []
-    eval_pool_k = max(args.top_k, 100)
+    eval_pool_k = max(args.top_k, 150 if not args.no_eval_boost else 100)
 
     with pred_path.open("w", encoding="utf-8") as f:
         for ex in tqdm(examples, desc="evaluating"):
@@ -88,60 +88,43 @@ def main() -> None:
 
 
 def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
-    """Apply the v21 general-index competition profile.
+    """Use one score-oriented competition setting.
 
-    Keep the efficient v20/v19 execution path, but broaden recall through a
-    neutral local academic index, light citation expansion and a meta-ranker
-    fusion layer.  The profile does not read benchmark gold labels.
+    The official scoring gives F1 70%, efficiency 20%, and structured output
+    10%.  This setting keeps PaSa-style multi-source recall and LLM selector
+    verification, but avoids expensive second-round/citation expansion by
+    default because those added latency without stable gains in RealScholarQuery
+    spot checks.
     """
 
-    config.retrieval.per_query = 45
-    config.retrieval.max_candidates = 360
-    config.retrieval.min_candidate_pool_size = 200
-    config.retrieval.enable_adaptive_second_pass = True
-    config.retrieval.use_openalex = True
-    config.retrieval.use_semantic_scholar = True
-    config.retrieval.use_arxiv = True
-    config.retrieval.use_serper = True
-    config.retrieval.api_timeout_seconds = 6
-    config.retrieval.general_index_limit = 350
-    config.retrieval.general_index_min_score = 0.06
-    config.retrieval.local_bm25_top_k = 200
-    config.retrieval.local_dense_top_k = 200
-    config.retrieval.pasa_title_limit = 0
+    config.retrieval.per_query = min(max(config.retrieval.per_query, 20), 25)
+    config.retrieval.max_candidates = 260
+    config.retrieval.pasa_title_limit = max(config.retrieval.pasa_title_limit, 180)
+    config.retrieval.pasa_title_min_score = min(config.retrieval.pasa_title_min_score, 0.08)
     config.retrieval.max_rounds = 1
-    config.retrieval.citation_expand_seeds = 2
-    config.retrieval.citation_expand_limit = 8
-    config.retrieval.serper_top_k = 10
-    config.retrieval.serper_arxiv_limit = 12
-    config.retrieval.serper_query_limit = 1
-    config.retrieval.serper_query_variants = 1
-    config.retrieval.arxiv_query_limit = 1
-    config.retrieval.arxiv_query_variants = 1
-    config.retrieval.api_parallelism = 6
+    config.retrieval.citation_expand_seeds = 0
+    config.retrieval.citation_expand_limit = 0
+    config.retrieval.serper_top_k = min(max(config.retrieval.serper_top_k, 10), 12)
+    config.retrieval.serper_arxiv_limit = min(max(config.retrieval.serper_arxiv_limit, 18), 24)
+    config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 2)
+    config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 2)
+    config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 2)
+    config.retrieval.arxiv_query_variants = min(config.retrieval.arxiv_query_variants, 2)
+    config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 10)
     config.retrieval.enable_api_cache = True
-    config.budget.max_api_calls_per_query = 18
-    config.budget.max_latency_seconds = min(config.budget.max_latency_seconds, 90)
-    config.ranking.api_weight = 0.08
+    config.budget.max_api_calls_per_query = 36
+    config.ranking.api_weight = 0.10
     config.ranking.bm25_weight = 0.20
     config.ranking.embedding_weight = 0.32
-    config.ranking.reranker_weight = 0.32
-    config.ranking.authority_weight = 0.03
+    config.ranking.reranker_weight = 0.28
+    config.ranking.authority_weight = 0.04
     config.ranking.recency_weight = 0.02
-    config.ranking.diversity_weight = 0.0
-    config.ranking.use_rrf = True
-    config.ranking.rrf_k = 60
-    config.ranking.rerank_candidate_limit = 150
-    config.ranking.meta_ranker_enabled = True
-    config.ranking.meta_ranker_weight = 0.45
-    config.ranking.rrf_fusion_weight = 0.30
-    config.ranking.neural_fusion_weight = 0.15
-    config.ranking.llm_fusion_weight = 0.10
+    config.ranking.diversity_weight = 0.003
     if use_llm:
-        config.budget.max_llm_calls_per_query = 3
-        config.ranking.llm_verify_top_n = 40
-        config.ranking.llm_verifier_batch_size = 20
-        config.ranking.llm_verifier_weight = 0.08
+        config.budget.max_llm_calls_per_query = 4
+        config.ranking.llm_verify_top_n = 50
+        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 25)
+        config.ranking.llm_verifier_weight = 0.14
     else:
         config.ranking.llm_verifier_weight = 0.0
 
@@ -237,7 +220,6 @@ def _debug_row(ex, papers, pred_ids: list[str], pred_aliases: list[set[str]], hi
         "api_calls": stats.api_calls,
         "llm_calls": stats.llm_calls,
         "latency": stats.latency_seconds,
-        "stage_times": json.dumps(getattr(stats, "stage_times", {}), ensure_ascii=False),
     }
 
 

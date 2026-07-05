@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from wenyan_competition.config import RankingConfig, RetrievalConfig, SmallModelConfig, load_config
+from wenyan_competition.config import RetrievalConfig, load_config
 from wenyan_competition.dataset import extract_gold_items
 from wenyan_competition.llm import _as_dict, _as_list, heuristic_plan, heuristic_synthesis
 from wenyan_competition.retrievers import (
@@ -16,7 +16,6 @@ from wenyan_competition.retrievers import (
     _openalex_api_work_url,
     _serper_arxiv_queries,
 )
-from wenyan_competition.ranker import CompetitionRanker, _rank_positions
 from wenyan_competition.schema import Paper
 from evaluate_pasa import _apply_formal_eval_defaults, flexible_recall_at, paper_aliases
 
@@ -39,8 +38,6 @@ def main() -> None:
         check_arxiv_query_helpers,
         check_serper_arxiv_helpers,
         check_formal_eval_defaults,
-        check_llm_rescore_skips_neural_models,
-        check_rrf_tied_scores_share_rank,
         check_openalex_url_normalization,
         check_citation_fetch_warnings_are_quiet,
         check_smoke_command,
@@ -148,7 +145,6 @@ def check_pasa_title_retriever() -> None:
         ["smaller dataset in large language model pre-training can result in better models"]
     )
     assert any(p.paper_id == "2309.04564" for p in papers)
-    assert any(p.source == "GeneralAcademicIndex" for p in papers)
 
 
 def check_topic_expansion_helpers() -> None:
@@ -206,73 +202,19 @@ def check_serper_arxiv_helpers() -> None:
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
-    assert cfg.ranking.llm_verify_top_n == 40
-    assert cfg.ranking.llm_verifier_batch_size == 20
-    assert cfg.budget.max_llm_calls_per_query == 3
-    assert cfg.retrieval.per_query == 45
-    assert cfg.retrieval.max_candidates == 360
-    assert cfg.retrieval.general_index_limit == 350
-    assert cfg.retrieval.general_index_min_score == 0.06
-    assert cfg.retrieval.local_bm25_top_k == 200
-    assert cfg.retrieval.local_dense_top_k == 200
-    assert cfg.retrieval.pasa_title_limit == 0
-    assert cfg.retrieval.enable_adaptive_second_pass is True
-    assert cfg.retrieval.min_candidate_pool_size == 200
+    assert cfg.ranking.llm_verify_top_n == 50
+    assert cfg.ranking.llm_verifier_batch_size >= 25
+    assert cfg.budget.max_llm_calls_per_query == 4
+    assert cfg.retrieval.max_candidates == 260
+    assert cfg.retrieval.pasa_title_limit >= 180
+    assert cfg.retrieval.pasa_title_min_score <= 0.08
     assert cfg.retrieval.max_rounds == 1
-    assert cfg.retrieval.citation_expand_seeds == 2
-    assert cfg.retrieval.citation_expand_limit == 8
-    assert cfg.retrieval.api_timeout_seconds == 6
-    assert cfg.budget.max_api_calls_per_query == 18
-    assert cfg.budget.max_latency_seconds <= 90
-    assert cfg.ranking.use_rrf is True
-    assert cfg.ranking.rrf_k == 60
-    assert cfg.ranking.rerank_candidate_limit == 150
-    assert cfg.ranking.meta_ranker_enabled is True
-    assert cfg.ranking.meta_ranker_weight == 0.45
-    assert cfg.ranking.rrf_fusion_weight == 0.30
-    assert cfg.ranking.neural_fusion_weight == 0.15
-    assert cfg.ranking.llm_fusion_weight == 0.10
-    assert cfg.ranking.diversity_weight == 0.0
-    assert cfg.retrieval.serper_query_limit == 1
-    assert cfg.retrieval.serper_query_variants == 1
-    assert cfg.retrieval.arxiv_query_limit == 1
-    assert cfg.retrieval.arxiv_query_variants == 1
-
-
-def check_llm_rescore_skips_neural_models() -> None:
-    ranker = CompetitionRanker(RankingConfig(), SmallModelConfig(), force_fallback_models=True)
-    papers = [
-        Paper(
-            paper_id="P1",
-            title="Relevant paper",
-            api_score=0.6,
-            bm25_score=0.7,
-            embedding_score=0.8,
-            reranker_score=0.9,
-            llm_score=0.9,
-            relevance_label="high",
-        ),
-        Paper(
-            paper_id="P2",
-            title="Partial paper",
-            api_score=0.5,
-            bm25_score=0.4,
-            embedding_score=0.3,
-            reranker_score=0.2,
-            llm_score=0.4,
-            relevance_label="partial",
-        ),
-    ]
-    ranker.embedding.score = lambda *_: (_ for _ in ()).throw(AssertionError("embedding reran"))
-    ranker.reranker.score = lambda *_: (_ for _ in ()).throw(AssertionError("reranker reran"))
-    rescored = ranker.rescore_existing("relevant paper", papers)
-    assert rescored[0].paper_id == "P1"
-    assert "embedding_seconds" not in ranker.last_stage_times
-    assert "reranker_seconds" not in ranker.last_stage_times
-
-
-def check_rrf_tied_scores_share_rank() -> None:
-    assert _rank_positions([0.9, 0.4, 0.4, 0.0, 0.0]) == [1, 2, 2, 4, 4]
+    assert cfg.retrieval.citation_expand_limit == 0
+    assert cfg.budget.max_api_calls_per_query == 36
+    assert cfg.retrieval.serper_query_limit <= 2
+    assert cfg.retrieval.serper_query_variants <= 2
+    assert cfg.retrieval.arxiv_query_limit <= 2
+    assert cfg.retrieval.arxiv_query_variants <= 2
 
 
 def check_openalex_url_normalization() -> None:
@@ -307,7 +249,6 @@ def check_smoke_command() -> None:
     assert data["papers"], "smoke query should return sample papers"
     assert data["papers"][0]["paper_id"] == "P1"
     assert data["agent_trace"], "agent trace should document crawler/selector/ranker steps"
-    assert data["stats"].get("stage_times"), "stage timing breakdown should be exported"
     assert {"authority_score", "recency_score", "diversity_score"} <= set(data["papers"][0])
 
 

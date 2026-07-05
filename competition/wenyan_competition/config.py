@@ -60,18 +60,8 @@ class RetrievalConfig:
     arxiv_query_limit: int = 2
     arxiv_query_variants: int = 2
     academic_only: bool = True
-    # Optional general public metadata index.  It accepts JSONL/JSON rows with
-    # title/abstract metadata, or a compact JSON mapping arXiv id -> title.
-    # The fallback to the PaSa public paper database is kept for reproducible
-    # public benchmark runs, but the source is treated as a general index rather
-    # than a gold-answer cache.
-    general_index_path: str = ""
-    general_index_limit: int = 0
-    general_index_min_score: float = 0.0
-    local_bm25_top_k: int = 200
-    local_dense_top_k: int = 200
-    general_index_fallback_pasa: bool = True
-    # Backward-compatible PaSa public arXiv title database.
+    # Optional PaSa paper database: JSON mapping arXiv id -> title.
+    # If the file does not exist, the retriever silently skips this source.
     pasa_id2paper_path: str = "data/pasa-dataset/paper_database/id2paper.json"
     pasa_title_limit: int = 80
     pasa_title_min_score: float = 0.10
@@ -79,9 +69,6 @@ class RetrievalConfig:
     max_candidates: int = 120
     citation_expand_seeds: int = 8
     citation_expand_limit: int = 80
-    min_candidate_pool_size: int = 180
-    enable_adaptive_second_pass: bool = True
-    api_timeout_seconds: int = 6
     max_rounds: int = 2
     local_corpus_path: str = ""
     local_min_score: float = 0.0
@@ -104,12 +91,6 @@ class RankingConfig:
     use_rrf: bool = True
     rrf_k: int = 60
     rerank_candidate_limit: int = 100
-    meta_ranker_enabled: bool = True
-    meta_ranker_weight: float = 0.45
-    rrf_fusion_weight: float = 0.30
-    neural_fusion_weight: float = 0.15
-    llm_fusion_weight: float = 0.10
-    meta_ranker_weights_path: str = ""
 
 
 @dataclass

@@ -107,7 +107,6 @@ class DemoHandler(BaseHTTPRequestHandler):
             payload = result.to_dict()
             payload["server_latency_seconds"] = time.time() - started
             payload["retrieval_mode"] = self._retrieval_mode()
-            payload["demo_notice"] = self._search_notice(len(result.papers))
             self._send_json(payload)
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=500)
@@ -175,8 +174,6 @@ class DemoHandler(BaseHTTPRequestHandler):
             "use_arxiv": retrieval.use_arxiv,
             "use_serper": retrieval.use_serper,
             "serper_api_key_configured": bool(retrieval.serper_api_key),
-            "general_index_path": retrieval.general_index_path,
-            "general_index_limit": retrieval.general_index_limit,
             "pasa_id2paper_path": retrieval.pasa_id2paper_path,
             "academic_only": retrieval.academic_only,
             "embedding_model": small.embedding_model,
@@ -719,8 +716,6 @@ HTML = r"""<!doctype html>
       const warnings = data.stats?.warnings || [];
       if (warnings.length) {
         $('notice').innerHTML = `<b>检索告警</b><br>${warnings.map(escapeHtml).join('<br>')}`;
-      } else if (data.demo_notice) {
-        $('notice').innerHTML = escapeHtml(data.demo_notice);
       }
       showTab('papers');
     }
@@ -739,7 +734,7 @@ HTML = r"""<!doctype html>
 
     function renderPapers(papers) {
       if (!papers.length) {
-        const msg = current?.demo_notice || '没有找到足够相关的论文。请换成在线配置，或扩大本地语料库。';
+        const msg = '没有找到足够相关的论文。请换成在线配置，或扩大本地语料库。';
         $('papers').innerHTML = `<div class="notice">${escapeHtml(msg)}</div>`;
         return;
       }

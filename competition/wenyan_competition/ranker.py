@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import math
 import re
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import List
 
 from .config import RankingConfig, SmallModelConfig
@@ -24,7 +22,6 @@ class CompetitionRanker:
         self.embedding = EmbeddingModel(small_model_config, force_fallback=force_fallback_models)
         self.reranker = CrossEncoderReranker(small_model_config, force_fallback=force_fallback_models)
         self.last_stage_times: dict[str, float] = {}
-        self.meta_weights = _load_meta_weights(self.config.meta_ranker_weights_path)
 
     def rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         if not papers:
@@ -84,17 +81,6 @@ class CompetitionRanker:
             + _intent_alignment_bonus(query, p)
             for p in papers
         ]
-        meta_scores = _normalize(
-            [
-                _meta_ranker_score(query, p, self.meta_weights)
-                if self.config.meta_ranker_enabled
-                else weighted_scores[i]
-                for i, p in enumerate(papers)
-            ]
-        )
-        reranker_norm = _normalize(reranker)
-        llm_norm = _normalize(llm)
-        weighted_norm = _normalize(weighted_scores)
 
         if self.config.use_rrf:
             rrf_scores = _rrf_fusion(
@@ -108,38 +94,17 @@ class CompetitionRanker:
                 k=max(1, self.config.rrf_k),
             )
             fused_scores = _normalize(rrf_scores)
-            total_weight = max(
-                1e-9,
-                self.config.meta_ranker_weight
-                + self.config.rrf_fusion_weight
-                + self.config.neural_fusion_weight
-                + self.config.llm_fusion_weight
-                + 0.10,
-            )
+            weighted_norm = _normalize(weighted_scores)
             for i, paper in enumerate(papers):
                 paper.final_score = (
-                    self.config.meta_ranker_weight * meta_scores[i]
-                    + self.config.rrf_fusion_weight * fused_scores[i]
-                    + self.config.neural_fusion_weight * reranker_norm[i]
-                    + self.config.llm_fusion_weight * llm_norm[i]
-                    + 0.10 * weighted_norm[i]
-                ) / total_weight + _selector_confidence_bonus(paper)
+                    0.70 * fused_scores[i]
+                    + 0.30 * weighted_norm[i]
+                    + _selector_confidence_bonus(paper)
+                )
             return
 
-        total_weight = max(
-            1e-9,
-            self.config.meta_ranker_weight
-            + self.config.neural_fusion_weight
-            + self.config.llm_fusion_weight
-            + 0.10,
-        )
         for i, paper in enumerate(papers):
-            paper.final_score = (
-                self.config.meta_ranker_weight * meta_scores[i]
-                + self.config.neural_fusion_weight * reranker_norm[i]
-                + self.config.llm_fusion_weight * llm_norm[i]
-                + 0.10 * weighted_norm[i]
-            ) / total_weight + _selector_confidence_bonus(paper)
+            paper.final_score = weighted_scores[i] + _selector_confidence_bonus(paper)
 
     def pre_rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         """Cheap intermediate ordering without embedding/reranker inference."""
@@ -232,87 +197,6 @@ def _normalize(values):
     return [(v - lo) / (hi - lo) for v in values]
 
 
-def _load_meta_weights(path: str) -> dict[str, float]:
-    default = {
-        "bias": -1.20,
-        "api": 0.55,
-        "bm25": 1.15,
-        "embedding": 1.15,
-        "reranker": 1.20,
-        "llm": 0.75,
-        "authority": 0.28,
-        "recency": 0.18,
-        "source_count": 0.28,
-        "title_hit": 0.75,
-        "abstract_hit": 0.38,
-        "method_overlap": 0.45,
-        "dataset_overlap": 0.40,
-        "metadata": 0.22,
-    }
-    if not path:
-        return default
-    p = Path(path)
-    if not p.exists():
-        return default
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-    if not isinstance(data, dict):
-        return default
-    merged = dict(default)
-    for key, value in data.items():
-        try:
-            merged[str(key)] = float(value)
-        except (TypeError, ValueError):
-            continue
-    return merged
-
-
-def _meta_ranker_score(query: str, p: Paper, weights: dict[str, float]) -> float:
-    q_terms = _query_terms(query)
-    title_terms = _query_terms(p.title)
-    abstract_terms = _query_terms(p.abstract[:1500])
-    source_count = min(1.0, len([s for s in re.split(r"[+/,]", p.source or "") if s.strip()]) / 3.0)
-    title_hit = len(q_terms & title_terms) / max(1, min(len(q_terms), 12))
-    abstract_hit = len(q_terms & abstract_terms) / max(1, min(len(q_terms), 18))
-    method_overlap = _term_group_overlap(q_terms, title_terms | abstract_terms, _METHOD_TERMS)
-    dataset_overlap = _term_group_overlap(q_terms, title_terms | abstract_terms, _DATASET_TERMS)
-    metadata = min(1.0, _metadata_quality_bonus(p) / 0.25)
-    raw = (
-        weights.get("bias", 0.0)
-        + weights.get("api", 0.0) * p.api_score
-        + weights.get("bm25", 0.0) * p.bm25_score
-        + weights.get("embedding", 0.0) * p.embedding_score
-        + weights.get("reranker", 0.0) * p.reranker_score
-        + weights.get("llm", 0.0) * p.llm_score
-        + weights.get("authority", 0.0) * p.authority_score
-        + weights.get("recency", 0.0) * p.recency_score
-        + weights.get("source_count", 0.0) * source_count
-        + weights.get("title_hit", 0.0) * title_hit
-        + weights.get("abstract_hit", 0.0) * abstract_hit
-        + weights.get("method_overlap", 0.0) * method_overlap
-        + weights.get("dataset_overlap", 0.0) * dataset_overlap
-        + weights.get("metadata", 0.0) * metadata
-    )
-    return 1.0 / (1.0 + math.exp(-max(-20.0, min(20.0, raw))))
-
-
-def _query_terms(text: str) -> set[str]:
-    return {
-        t
-        for t in re.findall(r"[a-z0-9][a-z0-9\-]{1,}", (text or "").lower())
-        if t not in _RANK_STOPWORDS and len(t) > 1
-    }
-
-
-def _term_group_overlap(query_terms: set[str], doc_terms: set[str], group_terms: set[str]) -> float:
-    active = query_terms & group_terms
-    if not active:
-        return 0.0
-    return len(active & doc_terms) / max(1, len(active))
-
-
 def _metadata_quality_bonus(p: Paper) -> float:
     """Small tie-breaker for scholarly metadata quality."""
 
@@ -392,7 +276,7 @@ def _intent_alignment_bonus(query: str, p: Paper) -> float:
         hits = sum(1 for group in topic_groups if any(term in text for term in group))
         bonus += min(0.10, hits * 0.025)
 
-    if p.source in {"arXiv", "GeneralAcademicIndex", "PaSaTitleDB"} and (p.paper_id or "").strip():
+    if p.source in {"arXiv", "PaSaTitleDB"} and (p.paper_id or "").strip():
         bonus += 0.015
     return bonus
 
@@ -432,75 +316,6 @@ def _topic_alignment_groups(query: str) -> List[List[str]]:
     if "rag" in query or "retrieval augmented generation" in query:
         groups += [["retrieval augmented generation", "rag"], ["attribution", "evidence", "evaluation"]]
     return groups
-
-
-_METHOD_TERMS = {
-    "algorithm",
-    "architecture",
-    "attention",
-    "benchmark",
-    "classification",
-    "control",
-    "detection",
-    "evaluation",
-    "generation",
-    "learning",
-    "model",
-    "models",
-    "optimization",
-    "pretraining",
-    "pruning",
-    "ranking",
-    "retrieval",
-    "reranking",
-    "selection",
-    "transformer",
-    "tuning",
-}
-
-
-_DATASET_TERMS = {
-    "benchmark",
-    "benchmarks",
-    "corpus",
-    "data",
-    "dataset",
-    "datasets",
-    "evaluation",
-    "imagenet",
-    "mmlu",
-    "pretraining",
-    "training",
-}
-
-
-_RANK_STOPWORDS = {
-    "about",
-    "after",
-    "also",
-    "and",
-    "are",
-    "based",
-    "between",
-    "from",
-    "give",
-    "into",
-    "large",
-    "model",
-    "models",
-    "paper",
-    "papers",
-    "result",
-    "results",
-    "show",
-    "study",
-    "that",
-    "the",
-    "this",
-    "using",
-    "which",
-    "with",
-}
 
 
 def _diversified_sort(papers: List[Paper], diversity_weight: float) -> List[Paper]:

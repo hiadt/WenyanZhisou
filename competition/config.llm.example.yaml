@@ -27,30 +27,22 @@ retrieval:
   semantic_scholar_api_key: "${SEMANTIC_SCHOLAR_API_KEY}"
   serper_api_key: "${SERPER_API_KEY}"
   serper_top_k: 10
-  serper_arxiv_limit: 12
-  serper_query_limit: 1
-  serper_query_variants: 1
-  arxiv_query_limit: 1
-  arxiv_query_variants: 1
+  serper_arxiv_limit: 18
+  serper_query_limit: 2
+  serper_query_variants: 2
+  arxiv_query_limit: 2
+  arxiv_query_variants: 2
   academic_only: true
-  general_index_path: ""
-  general_index_limit: 350
-  general_index_min_score: 0.06
-  local_bm25_top_k: 200
-  local_dense_top_k: 200
-  general_index_fallback_pasa: true
   pasa_id2paper_path: "data/pasa-dataset/paper_database/id2paper.json"
-  pasa_title_limit: 0
-  pasa_title_min_score: 0.07
+  pasa_title_limit: 80
+  pasa_title_min_score: 0.10
   local_corpus_path: ""
   local_min_score: 0.0
-  per_query: 45
-  max_candidates: 360
-  min_candidate_pool_size: 200
-  enable_adaptive_second_pass: true
-  citation_expand_seeds: 2
-  citation_expand_limit: 8
-  max_rounds: 1
+  per_query: 20
+  max_candidates: 120
+  citation_expand_seeds: 8
+  citation_expand_limit: 80
+  max_rounds: 2
   api_parallelism: 6
   enable_api_cache: true
 
@@ -59,23 +51,17 @@ ranking:
   bm25_weight: 0.15
   embedding_weight: 0.25
   reranker_weight: 0.25
-  llm_verifier_weight: 0.08
-  authority_weight: 0.03
-  recency_weight: 0.02
-  diversity_weight: 0.00
-  llm_verify_top_n: 40
+  llm_verifier_weight: 0.15
+  authority_weight: 0.06
+  recency_weight: 0.03
+  diversity_weight: 0.01
+  llm_verify_top_n: 30
   llm_verifier_batch_size: 20
   use_rrf: true
   rrf_k: 60
-  rerank_candidate_limit: 150
-  meta_ranker_enabled: true
-  meta_ranker_weight: 0.45
-  rrf_fusion_weight: 0.30
-  neural_fusion_weight: 0.15
-  llm_fusion_weight: 0.10
-  meta_ranker_weights_path: ""
+  rerank_candidate_limit: 100
 
 budget:
-  max_llm_calls_per_query: 3
-  max_api_calls_per_query: 18
-  max_latency_seconds: 90
+  max_llm_calls_per_query: 4
+  max_api_calls_per_query: 24
+  max_latency_seconds: 180
