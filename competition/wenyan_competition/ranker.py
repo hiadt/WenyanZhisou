@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import re
+import time
+from contextlib import contextmanager
 from typing import List
 
 from .config import RankingConfig, SmallModelConfig
@@ -19,45 +21,112 @@ class CompetitionRanker:
         self.config = ranking_config
         self.embedding = EmbeddingModel(small_model_config, force_fallback=force_fallback_models)
         self.reranker = CrossEncoderReranker(small_model_config, force_fallback=force_fallback_models)
+        self.last_stage_times: dict[str, float] = {}
 
     def rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         if not papers:
             return []
-        bm25 = bm25_like_scores(query, papers)
-        emb = self.embedding.score(query, papers)
-        rerank = self.reranker.score(query, papers)
-        api = _normalize(
-            [
-                p.api_score
-                + math.log1p(p.citation_count) * 0.03
-                + _metadata_quality_bonus(p)
-                for p in papers
-            ]
-        )
-        authority = _normalize([_authority_raw(p) for p in papers])
-        recency = _normalize([_recency_raw(query, p) for p in papers])
-        llm = [p.llm_score for p in papers]
-
-        for i, p in enumerate(papers):
-            p.bm25_score = bm25[i]
-            p.embedding_score = emb[i]
-            p.reranker_score = rerank[i]
-            p.api_score = api[i]
-            p.authority_score = authority[i]
-            p.recency_score = recency[i]
-            p.diversity_score = 0.0
-            p.final_score = (
-                self.config.api_weight * p.api_score
-                + self.config.bm25_weight * p.bm25_score
-                + self.config.embedding_weight * p.embedding_score
-                + self.config.reranker_weight * p.reranker_score
-                + self.config.llm_verifier_weight * p.llm_score
-                + self.config.authority_weight * p.authority_score
-                + self.config.recency_weight * p.recency_score
-                + _intent_alignment_bonus(query, p)
-                + _selector_confidence_bonus(p)
+        self.last_stage_times = {}
+        with _timer(self.last_stage_times, "bm25_seconds"):
+            bm25 = bm25_like_scores(query, papers)
+        with _timer(self.last_stage_times, "embedding_seconds"):
+            emb = self.embedding.score(query, papers)
+        with _timer(self.last_stage_times, "reranker_seconds"):
+            rerank = self.reranker.score(query, papers)
+        with _timer(self.last_stage_times, "merge_rank_seconds"):
+            api = _normalize(
+                [
+                    p.api_score
+                    + math.log1p(p.citation_count) * 0.03
+                    + _metadata_quality_bonus(p)
+                    for p in papers
+                ]
             )
-        return _diversified_sort(papers, self.config.diversity_weight)
+            authority = _normalize([_authority_raw(p) for p in papers])
+            recency = _normalize([_recency_raw(query, p) for p in papers])
+            llm = [p.llm_score for p in papers]
+
+            weighted_scores = []
+            for i, p in enumerate(papers):
+                p.bm25_score = bm25[i]
+                p.embedding_score = emb[i]
+                p.reranker_score = rerank[i]
+                p.api_score = api[i]
+                p.authority_score = authority[i]
+                p.recency_score = recency[i]
+                p.diversity_score = 0.0
+                weighted_scores.append(
+                    self.config.api_weight * p.api_score
+                    + self.config.bm25_weight * p.bm25_score
+                    + self.config.embedding_weight * p.embedding_score
+                    + self.config.reranker_weight * p.reranker_score
+                    + self.config.llm_verifier_weight * p.llm_score
+                    + self.config.authority_weight * p.authority_score
+                    + self.config.recency_weight * p.recency_score
+                    + _intent_alignment_bonus(query, p)
+                )
+
+            if self.config.use_rrf:
+                rrf_scores = _rrf_fusion(
+                    {
+                        "api": api,
+                        "bm25": bm25,
+                        "embedding": emb,
+                        "reranker": rerank,
+                        "llm": llm,
+                    },
+                    k=max(1, self.config.rrf_k),
+                )
+                fused_scores = _normalize(rrf_scores)
+                weighted_norm = _normalize(weighted_scores)
+                for i, p in enumerate(papers):
+                    p.final_score = (
+                        0.70 * fused_scores[i]
+                        + 0.30 * weighted_norm[i]
+                        + _selector_confidence_bonus(p)
+                    )
+            else:
+                for i, p in enumerate(papers):
+                    p.final_score = weighted_scores[i] + _selector_confidence_bonus(p)
+
+            return _diversified_sort(papers, self.config.diversity_weight)
+
+
+@contextmanager
+def _timer(stats: dict[str, float], name: str):
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        stats[name] = stats.get(name, 0.0) + (time.perf_counter() - started)
+
+
+def _rrf_fusion(signals: dict[str, List[float]], k: int = 60) -> List[float]:
+    if not signals:
+        return []
+    n = max((len(values) for values in signals.values()), default=0)
+    scores = [0.0] * n
+    weights = {
+        "api": 0.8,
+        "bm25": 1.0,
+        "embedding": 1.2,
+        "reranker": 1.4,
+        "llm": 0.6,
+    }
+    for name, values in signals.items():
+        if not values or max(values) - min(values) < 1e-9:
+            continue
+        for idx, rank in enumerate(_rank_positions(values)):
+            scores[idx] += weights.get(name, 1.0) / (k + rank)
+    return scores
+
+
+def _rank_positions(values: List[float]) -> List[int]:
+    ordered = sorted(range(len(values)), key=lambda i: values[i], reverse=True)
+    ranks = [len(values)] * len(values)
+    for rank, idx in enumerate(ordered, 1):
+        ranks[idx] = rank
+    return ranks
 
 
 def _normalize(values):
@@ -156,10 +225,12 @@ def _intent_alignment_bonus(query: str, p: Paper) -> float:
 
 def _selector_confidence_bonus(p: Paper) -> float:
     label = (p.relevance_label or "").lower()
+    if label.startswith("irrelevant"):
+        return -0.05
     if p.llm_score >= 0.80 or label.startswith("high"):
-        return 0.10
+        return 0.08
     if p.llm_score >= 0.55 or label.startswith("partial"):
-        return 0.045
+        return 0.03
     return 0.0
 
 

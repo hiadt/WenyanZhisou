@@ -69,6 +69,7 @@ class AgentStats:
     estimated_prompt_tokens: int = 0
     estimated_completion_tokens: int = 0
     latency_seconds: float = 0.0
+    stage_times: Dict[str, float] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
 

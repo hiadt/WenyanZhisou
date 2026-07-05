@@ -125,7 +125,7 @@ class AcademicRetriever:
         if self.config.openalex_mailto:
             params.append("mailto=" + quote(self.config.openalex_mailto))
         url = "https://api.openalex.org/works?" + "&".join(params)
-        data = requests.get(url, timeout=20).json()
+        data = requests.get(url, timeout=self.config.api_timeout_seconds).json()
         out: List[Paper] = []
         for item in data.get("results", []):
             title = item.get("title") or item.get("display_name") or ""
@@ -181,7 +181,11 @@ class AcademicRetriever:
                 "sortBy": "relevance",
                 "sortOrder": "descending",
             }
-            resp = requests.get("https://export.arxiv.org/api/query", params=params, timeout=20)
+            resp = requests.get(
+                "https://export.arxiv.org/api/query",
+                params=params,
+                timeout=self.config.api_timeout_seconds,
+            )
             if resp.status_code >= 400:
                 continue
             root = ET.fromstring(resp.text)
@@ -220,7 +224,7 @@ class AcademicRetriever:
                 "https://google.serper.dev/search",
                 headers=headers,
                 json={"q": search_query, "num": min(max(1, self.config.serper_top_k), 20)},
-                timeout=20,
+                timeout=self.config.api_timeout_seconds,
             )
             if resp.status_code >= 400:
                 self.warnings.append(f"search_serper_arxiv failed: HTTP {resp.status_code}")
@@ -242,7 +246,7 @@ class AcademicRetriever:
             resp = requests.get(
                 "https://export.arxiv.org/api/query",
                 params={"id_list": ",".join(batch), "max_results": str(len(batch))},
-                timeout=20,
+                timeout=self.config.api_timeout_seconds,
             )
             if resp.status_code >= 400:
                 continue
@@ -260,7 +264,7 @@ class AcademicRetriever:
     def fetch_openalex_work(self, work_id: str) -> List[Paper]:
         self._inc_api()
         url = _openalex_api_work_url(work_id)
-        item = _get_json_or_none(url)
+        item = _get_json_or_none(url, timeout=self.config.api_timeout_seconds)
         if not item:
             return []
         title = item.get("title") or item.get("display_name") or ""
@@ -327,7 +331,7 @@ class AcademicRetriever:
         headers = {}
         if self.config.semantic_scholar_api_key:
             headers["x-api-key"] = self.config.semantic_scholar_api_key
-        data = requests.get(url, headers=headers, timeout=20).json()
+        data = requests.get(url, headers=headers, timeout=self.config.api_timeout_seconds).json()
         out: List[Paper] = []
         for item in data.get("data", []):
             title = item.get("title") or ""
@@ -398,7 +402,7 @@ class AcademicRetriever:
         headers = {}
         if self.config.semantic_scholar_api_key:
             headers["x-api-key"] = self.config.semantic_scholar_api_key
-        item = _get_json_or_none(url, headers=headers)
+        item = _get_json_or_none(url, headers=headers, timeout=self.config.api_timeout_seconds)
         if not item:
             return []
         title = item.get("title") or ""
@@ -808,8 +812,8 @@ def _year_from_date(text: str):
     return int(match.group(0)) if match else None
 
 
-def _get_json_or_none(url: str, headers: Dict[str, str] | None = None):
-    resp = requests.get(url, headers=headers or {}, timeout=20)
+def _get_json_or_none(url: str, headers: Dict[str, str] | None = None, timeout: int = 12):
+    resp = requests.get(url, headers=headers or {}, timeout=timeout)
     if resp.status_code >= 400:
         return None
     content_type = resp.headers.get("content-type", "").lower()

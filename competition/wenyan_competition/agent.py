@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from collections import Counter
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 
 from .config import AppConfig
@@ -36,12 +37,14 @@ class AcademicSearchAgent:
 
     def search(self, query: str, top_k: int = 20, synthesize: bool = True) -> SearchOutput:
         started = time.time()
+        stage_times: Dict[str, float] = {}
         self.retriever.reset_stats()
         if self.llm_client:
             self.llm_client.reset_stats()
 
         trace: List[AgentTrace] = []
-        plan = self.planner.plan(query)
+        with _timer(stage_times, "planner_seconds"):
+            plan = self.planner.plan(query)
         self._add_trace(
             trace,
             role="Planner",
@@ -64,13 +67,14 @@ class AcademicSearchAgent:
             if round_id == 0:
                 active_strategies = strategies
             else:
-                evolved = self._next_queries(
-                    query,
-                    scoring_query,
-                    candidates,
-                    existing=queries,
-                    use_llm=synthesize,
-                )
+                with _timer(stage_times, "planner_seconds"):
+                    evolved = self._next_queries(
+                        query,
+                        scoring_query,
+                        candidates,
+                        existing=queries,
+                        use_llm=synthesize,
+                    )
                 active_strategies = [
                     {
                         "name": "query-evolution",
@@ -80,48 +84,81 @@ class AcademicSearchAgent:
                 ]
                 queries = list(dict.fromkeys(queries + evolved))
 
-            for strategy in active_strategies:
-                all_strategy_queries = _unique([q for q in strategy["queries"] if q])
-                if not all_strategy_queries:
-                    continue
-                before = len(candidates)
-                strategy_queries = self._budgeted_queries(all_strategy_queries)
-                if not strategy_queries:
-                    continue
-                found = self.retriever.search_many(strategy_queries)
-                candidates = deduplicate(candidates + found)
-                candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+            delayed_strategies: List[Dict[str, List[str] | str]] = []
+            if (
+                round_id == 0
+                and self.config.retrieval.enable_adaptive_second_pass
+                and len(active_strategies) > 2
+            ):
+                delayed_strategies = active_strategies[2:]
+                active_strategies = active_strategies[:2]
+
+            candidates = self._run_retrieval_strategies(
+                trace=trace,
+                round_id=round_id,
+                strategies=active_strategies,
+                scoring_query=scoring_query,
+                candidates=candidates,
+                stage_times=stage_times,
+            )
+            candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                : self.config.retrieval.max_candidates
+            ]
+
+            need_more_recall = self._should_expand_recall(candidates)
+            if (
+                delayed_strategies
+                and need_more_recall
+                and self.retriever.api_calls < self.config.budget.max_api_calls_per_query
+            ):
                 self._add_trace(
                     trace,
                     role="Crawler",
-                    action=f"round {round_id + 1}: {strategy['name']}",
-                    detail=strategy["detail"],
-                    queries=all_strategy_queries,
-                    candidates_before=before,
+                    action=f"round {round_id + 1}: adaptive second-pass recall",
+                    detail="Candidate pool is weak, so the agent activates delayed title/constraint strategies.",
+                    candidates_before=len(candidates),
                     candidates_after=len(candidates),
-                    selected_count=len(found),
+                    selected_count=0,
                 )
-                if self.retriever.api_calls >= self.config.budget.max_api_calls_per_query:
-                    break
-            candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+                candidates = self._run_retrieval_strategies(
+                    trace=trace,
+                    round_id=round_id,
+                    strategies=delayed_strategies,
+                    scoring_query=scoring_query,
+                    candidates=candidates,
+                    stage_times=stage_times,
+                )
+                candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                    : self.config.retrieval.max_candidates
+                ]
+                need_more_recall = self._should_expand_recall(candidates)
+
             if (
                 self.config.retrieval.citation_expand_limit > 0
                 and candidates
                 and self.retriever.api_calls < self.config.budget.max_api_calls_per_query
+                and (
+                    not self.config.retrieval.enable_adaptive_second_pass
+                    or need_more_recall
+                )
             ):
                 before = len(candidates)
-                expanded = self.retriever.expand_citation_network(
-                    candidates[: self.config.retrieval.citation_expand_seeds],
-                    max_api_calls=self.config.budget.max_api_calls_per_query,
-                )
+                seeds = self._citation_seeds(candidates)
+                with _timer(stage_times, "citation_seconds"):
+                    expanded = self.retriever.expand_citation_network(
+                        seeds,
+                        max_api_calls=self.config.budget.max_api_calls_per_query,
+                    )
                 if expanded:
                     candidates = deduplicate(candidates + expanded)
-                    candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+                    candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                        : self.config.retrieval.max_candidates
+                    ]
                 self._add_trace(
                     trace,
                     role="Crawler",
                     action=f"round {round_id + 1}: citation-network expansion",
-                    detail="Follow one-hop references/citations from high-score seeds to improve coverage.",
+                    detail="Conditionally follow one-hop references/citations from high-quality seeds.",
                     candidates_before=before,
                     candidates_after=len(candidates),
                     selected_count=len(expanded),
@@ -148,7 +185,8 @@ class AcademicSearchAgent:
                 reserve_calls = 1 if synthesize else 0
                 if self.llm_client.calls >= max(1, self.config.budget.max_llm_calls_per_query - reserve_calls):
                     break
-                self.verifier.verify(query, batch)
+                with _timer(stage_times, "llm_verifier_seconds"):
+                    self.verifier.verify(query, batch)
                 self._add_trace(
                     trace,
                     role="Selector",
@@ -158,22 +196,25 @@ class AcademicSearchAgent:
                     candidates_after=len([p for p in batch if p.llm_score > 0]),
                     selected_count=len(batch),
                 )
-            candidates = self.ranker.rank(scoring_query, candidates)
+            candidates = self._rank_candidates(scoring_query, candidates, stage_times)
 
         before_filter = len(candidates)
-        candidates = self._selector_filter(candidates, top_k)
+        with _timer(stage_times, "merge_rank_seconds"):
+            candidates = self._selector_filter(candidates, top_k)
         self._add_trace(
             trace,
             role="Selector",
-            action="noise filtering",
-            detail="Remove obvious irrelevant papers while preserving enough recall for final ranking.",
+            action="light noise guard",
+            detail="Keep recall while removing only malformed empty-title candidates.",
             candidates_before=before_filter,
             candidates_after=len(candidates),
             selected_count=len(candidates),
         )
-        candidates = self._filter_textually_related(candidates)
+        with _timer(stage_times, "merge_rank_seconds"):
+            candidates = self._filter_textually_related(candidates)
         if not synthesize:
-            candidates = self._selector_first_sort(scoring_query, candidates)
+            with _timer(stage_times, "merge_rank_seconds"):
+                candidates = self._selector_first_sort(scoring_query, candidates)
         self._add_trace(
             trace,
             role="Ranker",
@@ -186,13 +227,20 @@ class AcademicSearchAgent:
 
         top_papers = candidates[:top_k]
         summary = self._summary(query, top_papers)
-        synthesis = self.synthesizer.synthesize(query, top_papers) if synthesize else {}
+        if synthesize:
+            with _timer(stage_times, "synthesis_seconds"):
+                synthesis = self.synthesizer.synthesize(query, top_papers)
+        else:
+            synthesis = {}
+        latency = time.time() - started
+        stage_times["total_seconds"] = latency
         stats = AgentStats(
             llm_calls=self.llm_client.calls if self.llm_client else 0,
             api_calls=self.retriever.api_calls,
             estimated_prompt_tokens=self.llm_client.prompt_tokens if self.llm_client else 0,
             estimated_completion_tokens=self.llm_client.completion_tokens if self.llm_client else 0,
-            latency_seconds=time.time() - started,
+            latency_seconds=latency,
+            stage_times={key: round(value, 4) for key, value in stage_times.items()},
             warnings=list(self.retriever.warnings)
             + (list(self.llm_client.warnings) if self.llm_client else []),
         )
@@ -247,6 +295,88 @@ class AcademicSearchAgent:
             )
         return strategies
 
+    def _run_retrieval_strategies(
+        self,
+        *,
+        trace: List[AgentTrace],
+        round_id: int,
+        strategies: List[Dict[str, List[str] | str]],
+        scoring_query: str,
+        candidates: List[Paper],
+        stage_times: Dict[str, float],
+    ) -> List[Paper]:
+        for strategy in strategies:
+            all_strategy_queries = _unique([q for q in strategy["queries"] if q])
+            if not all_strategy_queries:
+                continue
+            before = len(candidates)
+            strategy_queries = self._budgeted_queries(all_strategy_queries)
+            if not strategy_queries:
+                continue
+            with _timer(stage_times, "api_seconds"):
+                found = self.retriever.search_many(strategy_queries)
+            candidates = deduplicate(candidates + found)
+            if len(candidates) > self.config.retrieval.max_candidates * 2:
+                candidates = self._rank_candidates(scoring_query, candidates, stage_times)[
+                    : self.config.retrieval.max_candidates
+                ]
+            self._add_trace(
+                trace,
+                role="Crawler",
+                action=f"round {round_id + 1}: {strategy['name']}",
+                detail=strategy["detail"],
+                queries=all_strategy_queries,
+                candidates_before=before,
+                candidates_after=len(candidates),
+                selected_count=len(found),
+            )
+            if self.retriever.api_calls >= self.config.budget.max_api_calls_per_query:
+                break
+        return candidates
+
+    def _rank_candidates(
+        self,
+        scoring_query: str,
+        candidates: List[Paper],
+        stage_times: Dict[str, float],
+    ) -> List[Paper]:
+        ranked = self.ranker.rank(scoring_query, candidates)
+        for key, value in self.ranker.last_stage_times.items():
+            stage_times[key] = stage_times.get(key, 0.0) + value
+        return ranked
+
+    def _should_expand_recall(self, candidates: List[Paper]) -> bool:
+        if not candidates:
+            return True
+        top20 = candidates[:20]
+        avg_top20 = sum(p.final_score for p in top20) / max(1, len(top20))
+        high_conf_count = sum(
+            1
+            for p in top20
+            if p.final_score >= 0.65 or p.llm_score >= 0.75 or (p.relevance_label or "").lower().startswith("high")
+        )
+        if len(candidates) < self.config.retrieval.min_candidate_pool_size:
+            return True
+        if avg_top20 < 0.45:
+            return True
+        if high_conf_count < 5:
+            return True
+        return False
+
+    def _citation_seeds(self, candidates: List[Paper]) -> List[Paper]:
+        limit = max(0, self.config.retrieval.citation_expand_seeds)
+        if limit <= 0:
+            return []
+        seeds = [
+            p
+            for p in candidates[:30]
+            if (p.references or p.citations)
+            and (p.embedding_score >= 0.55 or p.reranker_score >= 0.60 or p.bm25_score >= 0.45)
+        ]
+        if not seeds:
+            seeds = [p for p in candidates[: min(3, limit)] if p.references or p.citations]
+        return seeds[:limit]
+
     def _filter_textually_related(self, candidates: List[Paper]) -> List[Paper]:
         """Drop API-only hits that have no title/abstract evidence.
 
@@ -286,22 +416,22 @@ class AcademicSearchAgent:
             label = (p.relevance_label or "").lower()
             label_bonus = 0.0
             if label.startswith("high"):
-                label_bonus = 0.35
+                label_bonus = 0.08
             elif label.startswith("partial"):
-                label_bonus = 0.12
+                label_bonus = 0.03
             elif label.startswith("irrelevant"):
-                label_bonus = -0.35
+                label_bonus = -0.05
             source_bonus = 0.04 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
             title_signal = _title_query_score(query, p)
             sparse_penalty = -0.025 if not (p.abstract or p.venue or p.doi) and _source_family(p.source) not in {"PaSaTitleDB"} else 0.0
             score_value = (
-                p.llm_score
+                0.18 * p.llm_score
                 + label_bonus
                 + source_bonus
-                + 0.32 * p.final_score
-                + 0.10 * p.api_score
-                + 0.08 * p.reranker_score
-                + 0.05 * p.embedding_score
+                + 0.44 * p.final_score
+                + 0.08 * p.api_score
+                + 0.10 * p.reranker_score
+                + 0.07 * p.embedding_score
                 + 0.12 * title_signal
                 + 0.02 * p.authority_score
                 + sparse_penalty
@@ -340,16 +470,7 @@ class AcademicSearchAgent:
     def _selector_filter(self, candidates: List[Paper], top_k: int) -> List[Paper]:
         if not candidates:
             return []
-        filtered = []
-        for p in candidates:
-            label = (p.relevance_label or "").lower()
-            source = _source_family(p.source)
-            recall_source = source in {"SerperArxiv", "arXiv", "PaSaTitleDB"}
-            if label.startswith("irrelevant") and len(candidates) > top_k and not recall_source:
-                continue
-            if 0.0 < p.llm_score < 0.12 and len(candidates) > top_k * 2 and not recall_source:
-                continue
-            filtered.append(p)
+        filtered = [p for p in candidates if p.title]
         return filtered or candidates
 
     def _budgeted_queries(self, queries: List[str]) -> List[str]:
@@ -473,6 +594,15 @@ class AcademicSearchAgent:
             f"Returned {len(papers)} papers. {len(high)} papers are high-confidence candidates. "
             f"Top result: {papers[0].title}."
         )
+
+
+@contextmanager
+def _timer(stats: Dict[str, float], name: str):
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        stats[name] = stats.get(name, 0.0) + (time.perf_counter() - started)
 
 
 def _tokens(text: str):

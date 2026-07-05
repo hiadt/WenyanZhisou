@@ -202,15 +202,22 @@ def check_serper_arxiv_helpers() -> None:
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
-    assert cfg.ranking.llm_verify_top_n == 50
-    assert cfg.ranking.llm_verifier_batch_size >= 25
-    assert cfg.budget.max_llm_calls_per_query == 4
-    assert cfg.retrieval.max_candidates == 260
-    assert cfg.retrieval.pasa_title_limit >= 180
-    assert cfg.retrieval.pasa_title_min_score <= 0.08
+    assert cfg.ranking.llm_verify_top_n == 40
+    assert cfg.ranking.llm_verifier_batch_size >= 20
+    assert cfg.budget.max_llm_calls_per_query == 3
+    assert cfg.retrieval.per_query >= 40
+    assert cfg.retrieval.max_candidates == 420
+    assert cfg.retrieval.pasa_title_limit >= 220
+    assert cfg.retrieval.pasa_title_min_score <= 0.075
+    assert cfg.retrieval.enable_adaptive_second_pass is True
+    assert cfg.retrieval.min_candidate_pool_size >= 180
     assert cfg.retrieval.max_rounds == 1
-    assert cfg.retrieval.citation_expand_limit == 0
-    assert cfg.budget.max_api_calls_per_query == 36
+    assert cfg.retrieval.citation_expand_seeds == 5
+    assert cfg.retrieval.citation_expand_limit == 40
+    assert 8 <= cfg.retrieval.api_timeout_seconds <= 12
+    assert cfg.budget.max_api_calls_per_query == 30
+    assert cfg.ranking.use_rrf is True
+    assert cfg.ranking.rrf_k == 60
     assert cfg.retrieval.serper_query_limit <= 2
     assert cfg.retrieval.serper_query_variants <= 2
     assert cfg.retrieval.arxiv_query_limit <= 2
@@ -249,6 +256,7 @@ def check_smoke_command() -> None:
     assert data["papers"], "smoke query should return sample papers"
     assert data["papers"][0]["paper_id"] == "P1"
     assert data["agent_trace"], "agent trace should document crawler/selector/ranker steps"
+    assert data["stats"].get("stage_times"), "stage timing breakdown should be exported"
     assert {"authority_score", "recency_score", "diversity_score"} <= set(data["papers"][0])
 
 
