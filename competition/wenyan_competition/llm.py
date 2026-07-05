@@ -113,11 +113,11 @@ class LLMVerifier:
         for idx, p in enumerate(papers, 1):
             chunks.append(
                 f"[{idx}] source={p.source}; paper_id={p.paper_id}; url={p.url}\n"
-                f"title={p.title}\nyear={p.year}; venue={p.venue}\nabstract={p.abstract[:650]}"
+                f"title={p.title}\nyear={p.year}; venue={p.venue}\nabstract={p.abstract[:260]}"
             )
         prompt = f"""
-Judge paper relevance to the academic query. Return ONLY JSON:
-{{"items":[{{"index":1,"score":0.0-1.0,"label":"high|partial|irrelevant","reason":"..."}}]}}
+Judge paper relevance to the academic query. Return ONLY compact JSON, no reasons:
+{{"items":[[1,0.0,"high|partial|irrelevant"]]}}
 
 Query:
 {query}
@@ -137,28 +137,35 @@ Papers:
                 items = obj.get("items") or obj.get("results") or obj.get("papers") or []
             updated = 0
             for item in items:
-                if not isinstance(item, dict):
-                    continue
-                raw_index = (
-                    item.get("index")
-                    or item.get("paper_index")
-                    or item.get("paperIndex")
-                    or item.get("id")
-                )
-                i = int(raw_index or 0) - 1
-                if 0 <= i < len(papers):
-                    score = _coerce_score(
+                if isinstance(item, (list, tuple)) and len(item) >= 3:
+                    raw_index = item[0]
+                    raw_score = item[1]
+                    raw_label = item[2]
+                    raw_reason = ""
+                elif isinstance(item, dict):
+                    raw_index = (
+                        item.get("index")
+                        or item.get("paper_index")
+                        or item.get("paperIndex")
+                        or item.get("id")
+                    )
+                    raw_score = (
                         item.get("score")
                         or item.get("relevance")
                         or item.get("relevance_score")
                         or item.get("rating")
                         or 0.0
                     )
+                    raw_label = item.get("label") or item.get("relevance_label") or "candidate"
+                    raw_reason = item.get("reason", "")
+                else:
+                    continue
+                i = int(raw_index or 0) - 1
+                if 0 <= i < len(papers):
+                    score = _coerce_score(raw_score)
                     papers[i].llm_score = score
-                    papers[i].relevance_label = str(
-                        item.get("label") or item.get("relevance_label") or "candidate"
-                    )
-                    papers[i].reason = str(item.get("reason", ""))
+                    papers[i].relevance_label = str(raw_label)
+                    papers[i].reason = str(raw_reason)
                     updated += 1
             if updated == 0 and self.llm is not None:
                 self.llm.warnings.append("LLM verifier returned no usable relevance scores.")

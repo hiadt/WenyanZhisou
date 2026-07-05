@@ -194,8 +194,8 @@ def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
     assert cfg.ranking.llm_verify_top_n == 60
-    assert cfg.ranking.llm_verifier_batch_size >= 20
-    assert cfg.budget.max_llm_calls_per_query == 4
+    assert cfg.ranking.llm_verifier_batch_size >= 60
+    assert cfg.budget.max_llm_calls_per_query == 2
     assert cfg.retrieval.max_candidates == 220
     assert cfg.retrieval.pasa_title_limit >= 120
     assert cfg.retrieval.max_rounds == 1

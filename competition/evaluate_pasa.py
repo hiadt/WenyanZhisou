@@ -106,9 +106,9 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     config.retrieval.enable_api_cache = True
     config.budget.max_api_calls_per_query = 36
     if use_llm:
-        config.budget.max_llm_calls_per_query = 4
+        config.budget.max_llm_calls_per_query = 2
         config.ranking.llm_verify_top_n = 60
-        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
+        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 60)
         config.ranking.api_weight = max(config.ranking.api_weight, 0.14)
         config.ranking.llm_verifier_weight = max(config.ranking.llm_verifier_weight, 0.22)
 
