@@ -57,9 +57,6 @@ ranking:
   diversity_weight: 0.01
   llm_verify_top_n: 30
   llm_verifier_batch_size: 20
-  use_rrf: true
-  rrf_k: 60
-  rerank_candidate_limit: 100
 
 budget:
   max_llm_calls_per_query: 4

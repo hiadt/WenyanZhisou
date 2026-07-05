@@ -88,9 +88,6 @@ class RankingConfig:
     diversity_weight: float = 0.01
     llm_verify_top_n: int = 30
     llm_verifier_batch_size: int = 20
-    use_rrf: bool = True
-    rrf_k: int = 60
-    rerank_candidate_limit: int = 100
 
 
 @dataclass

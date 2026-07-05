@@ -90,7 +90,7 @@ class AcademicSearchAgent:
                     continue
                 found = self.retriever.search_many(strategy_queries)
                 candidates = deduplicate(candidates + found)
-                candidates = self.ranker.pre_rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+                candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
                 self._add_trace(
                     trace,
                     role="Crawler",
@@ -103,7 +103,7 @@ class AcademicSearchAgent:
                 )
                 if self.retriever.api_calls >= self.config.budget.max_api_calls_per_query:
                     break
-            candidates = self.ranker.pre_rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+            candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
             if (
                 self.config.retrieval.citation_expand_limit > 0
                 and candidates
@@ -116,7 +116,7 @@ class AcademicSearchAgent:
                 )
                 if expanded:
                     candidates = deduplicate(candidates + expanded)
-                    candidates = self.ranker.pre_rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+                    candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
                 self._add_trace(
                     trace,
                     role="Crawler",
@@ -129,7 +129,7 @@ class AcademicSearchAgent:
             if round_id + 1 >= self.config.retrieval.max_rounds or not candidates:
                 break
 
-        candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
+        candidates = candidates[: self.config.retrieval.max_candidates]
         verify_n = min(self.config.ranking.llm_verify_top_n, len(candidates))
         if self.llm_client and self.llm_client.calls < self.config.budget.max_llm_calls_per_query:
             selector_candidates = self._selector_candidates(candidates, verify_n)
@@ -158,7 +158,7 @@ class AcademicSearchAgent:
                     candidates_after=len([p for p in batch if p.llm_score > 0]),
                     selected_count=len(batch),
                 )
-            candidates = self.ranker.rescore_existing(scoring_query, candidates)
+            candidates = self.ranker.rank(scoring_query, candidates)
 
         before_filter = len(candidates)
         candidates = self._selector_filter(candidates, top_k)

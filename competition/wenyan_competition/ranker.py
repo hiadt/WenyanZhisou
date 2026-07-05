@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import math
 import re
-import time
-from contextlib import contextmanager
 from typing import List
 
 from .config import RankingConfig, SmallModelConfig
@@ -21,170 +19,45 @@ class CompetitionRanker:
         self.config = ranking_config
         self.embedding = EmbeddingModel(small_model_config, force_fallback=force_fallback_models)
         self.reranker = CrossEncoderReranker(small_model_config, force_fallback=force_fallback_models)
-        self.last_stage_times: dict[str, float] = {}
 
     def rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         if not papers:
             return []
-        prelim = self.pre_rank(query, papers)
-        rerank_limit = min(max(1, self.config.rerank_candidate_limit), len(prelim))
-        head = prelim[:rerank_limit]
-        tail = prelim[rerank_limit:]
-
-        with _timer(self.last_stage_times, "embedding_seconds"):
-            emb = self.embedding.score(query, head)
-        with _timer(self.last_stage_times, "reranker_seconds"):
-            rerank = self.reranker.score(query, head)
-        with _timer(self.last_stage_times, "merge_rank_seconds"):
-            for i, p in enumerate(head):
-                p.embedding_score = emb[i]
-                p.reranker_score = rerank[i]
-            self._fuse_existing_signals(query, head)
-
-            for p in tail:
-                p.embedding_score = 0.0
-                p.reranker_score = 0.0
-                p.final_score = max(0.0, p.final_score - 0.03)
-
-            return _diversified_sort(head + tail, self.config.diversity_weight)
-
-    def rescore_existing(self, query: str, papers: List[Paper]) -> List[Paper]:
-        """Fuse updated LLM judgments without rerunning neural models.
-
-        The verifier only changes ``llm_score`` and ``relevance_label``.  The
-        expensive embedding and cross-encoder outputs are already stored on
-        each paper, so a second model pass would add latency without adding a
-        new signal.
-        """
-
-        if not papers:
-            return []
-        self.last_stage_times = {}
-        with _timer(self.last_stage_times, "merge_rank_seconds"):
-            self._fuse_existing_signals(query, papers)
-            return _diversified_sort(papers, self.config.diversity_weight)
-
-    def _fuse_existing_signals(self, query: str, papers: List[Paper]) -> None:
-        api = [p.api_score for p in papers]
-        bm25 = [p.bm25_score for p in papers]
-        embedding = [p.embedding_score for p in papers]
-        reranker = [p.reranker_score for p in papers]
+        bm25 = bm25_like_scores(query, papers)
+        emb = self.embedding.score(query, papers)
+        rerank = self.reranker.score(query, papers)
+        api = _normalize(
+            [
+                p.api_score
+                + math.log1p(p.citation_count) * 0.03
+                + _metadata_quality_bonus(p)
+                for p in papers
+            ]
+        )
+        authority = _normalize([_authority_raw(p) for p in papers])
+        recency = _normalize([_recency_raw(query, p) for p in papers])
         llm = [p.llm_score for p in papers]
-        weighted_scores = [
-            self.config.api_weight * p.api_score
-            + self.config.bm25_weight * p.bm25_score
-            + self.config.embedding_weight * p.embedding_score
-            + self.config.reranker_weight * p.reranker_score
-            + self.config.llm_verifier_weight * p.llm_score
-            + self.config.authority_weight * p.authority_score
-            + self.config.recency_weight * p.recency_score
-            + _intent_alignment_bonus(query, p)
-            for p in papers
-        ]
 
-        if self.config.use_rrf:
-            rrf_scores = _rrf_fusion(
-                {
-                    "api": api,
-                    "bm25": bm25,
-                    "embedding": embedding,
-                    "reranker": reranker,
-                    "llm": llm,
-                },
-                k=max(1, self.config.rrf_k),
+        for i, p in enumerate(papers):
+            p.bm25_score = bm25[i]
+            p.embedding_score = emb[i]
+            p.reranker_score = rerank[i]
+            p.api_score = api[i]
+            p.authority_score = authority[i]
+            p.recency_score = recency[i]
+            p.diversity_score = 0.0
+            p.final_score = (
+                self.config.api_weight * p.api_score
+                + self.config.bm25_weight * p.bm25_score
+                + self.config.embedding_weight * p.embedding_score
+                + self.config.reranker_weight * p.reranker_score
+                + self.config.llm_verifier_weight * p.llm_score
+                + self.config.authority_weight * p.authority_score
+                + self.config.recency_weight * p.recency_score
+                + _intent_alignment_bonus(query, p)
+                + _selector_confidence_bonus(p)
             )
-            fused_scores = _normalize(rrf_scores)
-            weighted_norm = _normalize(weighted_scores)
-            for i, paper in enumerate(papers):
-                paper.final_score = (
-                    0.70 * fused_scores[i]
-                    + 0.30 * weighted_norm[i]
-                    + _selector_confidence_bonus(paper)
-                )
-            return
-
-        for i, paper in enumerate(papers):
-            paper.final_score = weighted_scores[i] + _selector_confidence_bonus(paper)
-
-    def pre_rank(self, query: str, papers: List[Paper]) -> List[Paper]:
-        """Cheap intermediate ordering without embedding/reranker inference."""
-
-        if not papers:
-            return []
-        self.last_stage_times = {}
-        with _timer(self.last_stage_times, "bm25_seconds"):
-            bm25 = bm25_like_scores(query, papers)
-        with _timer(self.last_stage_times, "merge_rank_seconds"):
-            api = _normalize(
-                [
-                    p.api_score
-                    + math.log1p(p.citation_count) * 0.03
-                    + _metadata_quality_bonus(p)
-                    for p in papers
-                ]
-            )
-            authority = _normalize([_authority_raw(p) for p in papers])
-            recency = _normalize([_recency_raw(query, p) for p in papers])
-            for i, p in enumerate(papers):
-                p.bm25_score = bm25[i]
-                p.api_score = api[i]
-                p.authority_score = authority[i]
-                p.recency_score = recency[i]
-                p.diversity_score = 0.0
-                p.final_score = (
-                    0.22 * p.api_score
-                    + 0.50 * p.bm25_score
-                    + 0.18 * p.authority_score
-                    + 0.07 * p.recency_score
-                    + 0.03 * p.llm_score
-                    + _intent_alignment_bonus(query, p)
-                    + _selector_confidence_bonus(p)
-                )
-        return sorted(papers, key=lambda p: p.final_score, reverse=True)
-
-
-@contextmanager
-def _timer(stats: dict[str, float], name: str):
-    started = time.perf_counter()
-    try:
-        yield
-    finally:
-        stats[name] = stats.get(name, 0.0) + (time.perf_counter() - started)
-
-
-def _rrf_fusion(signals: dict[str, List[float]], k: int = 60) -> List[float]:
-    if not signals:
-        return []
-    n = max((len(values) for values in signals.values()), default=0)
-    scores = [0.0] * n
-    weights = {
-        "api": 0.8,
-        "bm25": 1.0,
-        "embedding": 1.2,
-        "reranker": 1.4,
-        "llm": 0.6,
-    }
-    for name, values in signals.items():
-        if not values or max(values) - min(values) < 1e-9:
-            continue
-        for idx, rank in enumerate(_rank_positions(values)):
-            scores[idx] += weights.get(name, 1.0) / (k + rank)
-    return scores
-
-
-def _rank_positions(values: List[float]) -> List[int]:
-    ordered = sorted(range(len(values)), key=lambda i: values[i], reverse=True)
-    ranks = [len(values)] * len(values)
-    previous_value = None
-    tied_rank = 1
-    for position, idx in enumerate(ordered, 1):
-        value = values[idx]
-        if previous_value is None or value != previous_value:
-            tied_rank = position
-            previous_value = value
-        rank = tied_rank
-        ranks[idx] = rank
-    return ranks
+        return _diversified_sort(papers, self.config.diversity_weight)
 
 
 def _normalize(values):
@@ -283,12 +156,10 @@ def _intent_alignment_bonus(query: str, p: Paper) -> float:
 
 def _selector_confidence_bonus(p: Paper) -> float:
     label = (p.relevance_label or "").lower()
-    if label.startswith("irrelevant"):
-        return -0.05
     if p.llm_score >= 0.80 or label.startswith("high"):
-        return 0.08
+        return 0.10
     if p.llm_score >= 0.55 or label.startswith("partial"):
-        return 0.03
+        return 0.045
     return 0.0
 
 
