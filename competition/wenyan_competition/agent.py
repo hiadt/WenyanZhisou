@@ -85,7 +85,12 @@ class AcademicSearchAgent:
                 if not all_strategy_queries:
                     continue
                 before = len(candidates)
-                local_found = self.retriever.search_many(all_strategy_queries, include_online=False)
+                local_queries = self._local_recall_queries(str(strategy["name"]), all_strategy_queries)
+                local_found = (
+                    self.retriever.search_many(local_queries, include_online=False)
+                    if local_queries
+                    else []
+                )
                 strategy_queries = self._budgeted_queries(all_strategy_queries)
                 online_found = (
                     self.retriever.search_many(strategy_queries, include_local=False)
@@ -291,19 +296,19 @@ class AcademicSearchAgent:
                 label_bonus = 0.12
             elif label.startswith("irrelevant"):
                 label_bonus = -0.35
-            source_bonus = 0.045 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            source_bonus = 0.035 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
             text_evidence = (
-                0.18 * p.reranker_score
-                + 0.12 * p.embedding_score
-                + 0.08 * p.bm25_score
+                0.12 * p.reranker_score
+                + 0.08 * p.embedding_score
+                + 0.05 * p.bm25_score
             )
             score_value = (
-                0.82 * p.llm_score
+                0.90 * p.llm_score
                 + label_bonus
                 + source_bonus
                 + text_evidence
-                + 0.30 * p.final_score
-                + 0.08 * p.api_score
+                + 0.31 * p.final_score
+                + 0.09 * p.api_score
             )
             return (score_value, p.llm_score, p.reranker_score, p.final_score, p.api_score)
 
@@ -376,6 +381,16 @@ class AcademicSearchAgent:
             if uses_arxiv:
                 arxiv_left -= 1
         return selected
+
+    def _local_recall_queries(self, strategy_name: str, queries: List[str]) -> List[str]:
+        if strategy_name == "semantic-core":
+            return queries[:3]
+        if strategy_name == "constraint-focused":
+            return queries[:1]
+        # Broad authority/recency queries add many local-title candidates and
+        # were the main source of v13 latency. Online APIs can still handle them
+        # under the normal budget; PaSaTitleDB stays focused on user intent.
+        return []
 
     def _estimated_query_cost(self, serper_left: int, arxiv_left: int) -> tuple[int, bool, bool]:
         cost = int(self.config.retrieval.use_openalex) + int(self.config.retrieval.use_semantic_scholar)
