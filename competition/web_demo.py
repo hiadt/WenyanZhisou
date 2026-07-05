@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from wenyan_competition.agent import AcademicSearchAgent
 from wenyan_competition.config import AppConfig, load_config
 from wenyan_competition.dataset import load_jsonl
+from wenyan_competition.demo_local_corpus import build_demo_local_output
 from wenyan_competition.metrics import aggregate, f1_at, precision_at, recall_at
 
 
@@ -56,6 +57,9 @@ class DemoHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._send_html(HTML)
             return
+        if parsed.path == "/assets/library_background.png":
+            self._send_asset(Path("assets/library_background.png"), "image/png")
+            return
         if parsed.path == "/api/health":
             self._send_json(self._health())
             return
@@ -86,6 +90,14 @@ class DemoHandler(BaseHTTPRequestHandler):
         top_k = max(1, min(50, top_k))
         started = time.time()
         try:
+            demo_result = build_demo_local_output(query, top_k=top_k)
+            if demo_result is not None:
+                payload = demo_result.to_dict()
+                payload["server_latency_seconds"] = time.time() - started
+                payload["retrieval_mode"] = "demo_local_corpus"
+                payload["demo_notice"] = "演示本地库命中：使用固定论文候选快速展示流程；正式评测请运行 evaluate_pasa.py。"
+                self._send_json(payload)
+                return
             with self.state.lock:
                 result = self.state.agent.search(query, top_k=top_k)
             payload = result.to_dict()
@@ -211,6 +223,18 @@ class DemoHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_asset(self, path: Path, content_type: str) -> None:
+        if not path.exists() or not path.is_file():
+            self._send_json({"error": "asset not found"}, status=404)
+            return
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
@@ -272,13 +296,16 @@ HTML = r"""<!doctype html>
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        linear-gradient(rgba(246, 248, 251, .84), rgba(246, 248, 251, .90)),
+        url('/assets/library_background.png') center top / cover fixed no-repeat;
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
     header {
       border-bottom: 1px solid var(--line);
-      background: #fff;
+      background: rgba(255, 255, 255, .88);
+      backdrop-filter: blur(8px);
     }
     .wrap {
       max-width: 1260px;
@@ -302,9 +329,10 @@ HTML = r"""<!doctype html>
       align-items: start;
     }
     section, aside {
-      background: var(--panel);
+      background: rgba(255, 255, 255, .93);
       border: 1px solid var(--line);
       border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, .06);
     }
     .panel-head {
       padding: 14px 16px;
@@ -582,11 +610,6 @@ HTML = r"""<!doctype html>
         <div class="row">
           <label>Top K <input id="topK" type="number" value="8" min="1" max="50" /></label>
           <button id="searchBtn">搜索论文</button>
-          <button class="secondary" id="evalBtn">跑 smoke 评测</button>
-        </div>
-        <div class="row">
-          <button class="secondary" data-q="retrieval augmented generation evaluation evidence attribution">RAG 评测</button>
-          <button class="secondary" data-q="software vulnerability detection graph neural network">漏洞检测</button>
         </div>
         <div id="notice" class="notice" style="margin-top:12px;">正在读取服务状态...</div>
         <div class="status-grid">
@@ -672,26 +695,6 @@ HTML = r"""<!doctype html>
       } finally {
         btn.disabled = false;
         btn.textContent = '搜索论文';
-      }
-    }
-
-    async function evalSmoke() {
-      const btn = $('evalBtn');
-      btn.disabled = true;
-      btn.textContent = '评测中...';
-      try {
-        const res = await fetch('/api/evaluate_smoke');
-        const data = await res.json();
-        current = data;
-        $('raw').textContent = JSON.stringify(data, null, 2);
-        showTab('raw');
-        const m = data.metrics || {};
-        $('notice').innerHTML = `Smoke 评测完成：F1@20=${fmt(m['f1@20'])}，Recall@100=${fmt(m['recall@100'])}，样例数=${data.examples}`;
-      } catch (err) {
-        $('notice').textContent = err.message;
-      } finally {
-        btn.disabled = false;
-        btn.textContent = '跑 smoke 评测';
       }
     }
 
@@ -886,9 +889,7 @@ HTML = r"""<!doctype html>
     }
 
     document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => showTab(btn.dataset.tab)));
-    document.querySelectorAll('[data-q]').forEach(btn => btn.addEventListener('click', () => { $('query').value = btn.dataset.q; search(); }));
     $('searchBtn').addEventListener('click', search);
-    $('evalBtn').addEventListener('click', evalSmoke);
     health().then(() => {
       $('papers').innerHTML = `<div class="notice">请输入检索问题后点击搜索。</div>`;
       showTab('papers');

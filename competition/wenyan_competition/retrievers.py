@@ -48,15 +48,23 @@ class AcademicRetriever:
         self._serper_queries_used = 0
         self._arxiv_queries_used = 0
 
-    def search_many(self, queries: Iterable[str]) -> List[Paper]:
+    def search_many(
+        self,
+        queries: Iterable[str],
+        *,
+        include_local: bool = True,
+        include_online: bool = True,
+    ) -> List[Paper]:
         query_list = list(queries)
         papers: List[Paper] = []
-        if self._local_retriever:
+        if include_local and self._local_retriever:
             for q in query_list:
                 papers.extend(self._local_retriever.search(q))
-        if self._pasa_retriever:
+        if include_local and self._pasa_retriever:
             for q in query_list:
                 papers.extend(self._pasa_retriever.search(q))
+        if not include_online:
+            return deduplicate(papers)
         tasks: List[tuple[Callable[[str], List[Paper]], str]] = []
         for q in query_list:
             if (

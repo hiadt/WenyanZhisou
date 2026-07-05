@@ -18,3 +18,4 @@ competition/config.yaml
 # OS/editor noise.
 .DS_Store
 Thumbs.db
+~$*.docx
