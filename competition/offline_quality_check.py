@@ -148,6 +148,7 @@ def check_pasa_title_retriever() -> None:
         ["smaller dataset in large language model pre-training can result in better models"]
     )
     assert any(p.paper_id == "2309.04564" for p in papers)
+    assert any(p.source == "GeneralAcademicIndex" for p in papers)
 
 
 def check_topic_expansion_helpers() -> None:
@@ -205,24 +206,32 @@ def check_serper_arxiv_helpers() -> None:
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
     _apply_formal_eval_defaults(cfg, use_llm=True)
-    assert cfg.ranking.llm_verify_top_n == 30
-    assert cfg.ranking.llm_verifier_batch_size == 15
+    assert cfg.ranking.llm_verify_top_n == 40
+    assert cfg.ranking.llm_verifier_batch_size == 20
     assert cfg.budget.max_llm_calls_per_query == 3
-    assert cfg.retrieval.per_query == 38
-    assert cfg.retrieval.max_candidates == 260
-    assert cfg.retrieval.pasa_title_limit == 260
-    assert cfg.retrieval.pasa_title_min_score == 0.07
+    assert cfg.retrieval.per_query == 45
+    assert cfg.retrieval.max_candidates == 360
+    assert cfg.retrieval.general_index_limit == 350
+    assert cfg.retrieval.general_index_min_score == 0.06
+    assert cfg.retrieval.local_bm25_top_k == 200
+    assert cfg.retrieval.local_dense_top_k == 200
+    assert cfg.retrieval.pasa_title_limit == 0
     assert cfg.retrieval.enable_adaptive_second_pass is True
-    assert cfg.retrieval.min_candidate_pool_size == 150
+    assert cfg.retrieval.min_candidate_pool_size == 200
     assert cfg.retrieval.max_rounds == 1
-    assert cfg.retrieval.citation_expand_seeds == 0
-    assert cfg.retrieval.citation_expand_limit == 0
+    assert cfg.retrieval.citation_expand_seeds == 2
+    assert cfg.retrieval.citation_expand_limit == 8
     assert cfg.retrieval.api_timeout_seconds == 6
-    assert cfg.budget.max_api_calls_per_query == 16
-    assert cfg.budget.max_latency_seconds <= 70
+    assert cfg.budget.max_api_calls_per_query == 18
+    assert cfg.budget.max_latency_seconds <= 90
     assert cfg.ranking.use_rrf is True
     assert cfg.ranking.rrf_k == 60
-    assert cfg.ranking.rerank_candidate_limit == 120
+    assert cfg.ranking.rerank_candidate_limit == 150
+    assert cfg.ranking.meta_ranker_enabled is True
+    assert cfg.ranking.meta_ranker_weight == 0.45
+    assert cfg.ranking.rrf_fusion_weight == 0.30
+    assert cfg.ranking.neural_fusion_weight == 0.15
+    assert cfg.ranking.llm_fusion_weight == 0.10
     assert cfg.ranking.diversity_weight == 0.0
     assert cfg.retrieval.serper_query_limit == 1
     assert cfg.retrieval.serper_query_variants == 1

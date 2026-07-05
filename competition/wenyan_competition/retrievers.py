@@ -37,10 +37,21 @@ class AcademicRetriever:
             if local_corpus_path
             else None
         )
-        self._pasa_retriever = PasaTitleRetriever.from_path(
-            self.config.pasa_id2paper_path,
-            limit=self.config.pasa_title_limit,
-            min_score=self.config.pasa_title_min_score,
+        general_index_path = (
+            self.config.general_index_path
+            or _default_general_index_path()
+            or (
+                self.config.pasa_id2paper_path
+                if self.config.general_index_fallback_pasa
+                else ""
+            )
+        )
+        self._general_index_retriever = GeneralAcademicIndexRetriever.from_path(
+            general_index_path,
+            limit=self.config.general_index_limit or self.config.pasa_title_limit,
+            min_score=self.config.general_index_min_score or self.config.pasa_title_min_score,
+            bm25_top_k=self.config.local_bm25_top_k,
+            dense_top_k=self.config.local_dense_top_k,
         )
 
     def reset_stats(self) -> None:
@@ -61,9 +72,9 @@ class AcademicRetriever:
         if include_local and self._local_retriever:
             for q in query_list:
                 papers.extend(self._local_retriever.search(q))
-        if include_local and self._pasa_retriever:
+        if include_local and self._general_index_retriever:
             for q in query_list:
-                papers.extend(self._pasa_retriever.search(q))
+                papers.extend(self._general_index_retriever.search(q))
         if not include_online:
             return deduplicate(papers)
         tasks: List[tuple[Callable[[str], List[Paper]], str]] = []
@@ -500,6 +511,24 @@ def _default_local_corpus_path() -> str:
     return str(path) if path.exists() else ""
 
 
+def _default_general_index_path() -> str:
+    """Find an optional public academic metadata index.
+
+    Prefer the neutral project index name.  The PaSa paper database is used only
+    as a public arXiv metadata fallback so existing benchmark machines keep
+    working until a broader OpenAlex/S2/arXiv index is prepared.
+    """
+
+    for path in [
+        Path("data/general_academic_index/papers.jsonl"),
+        Path("data/general_academic_index/id2paper.json"),
+        Path("data/pasa-dataset/paper_database/id2paper.json"),
+    ]:
+        if path.exists():
+            return str(path)
+    return ""
+
+
 class LocalCorpusRetriever:
     """Small offline retriever for smoke tests and private corpora.
 
@@ -566,34 +595,56 @@ class LocalCorpusRetriever:
         return papers
 
 
-class PasaTitleRetriever:
-    """High-recall title retriever for PaSa's local arXiv paper database.
+class GeneralAcademicIndexRetriever:
+    """High-recall retriever over a public academic metadata index.
 
-    PaSa publishes a large `paper_database/id2paper.json` mapping arXiv ids to
-    paper titles.  OpenAlex/Semantic Scholar do not always return those exact
-    arXiv papers for long natural-language queries, so this lightweight inverted
-    index uses the local title database as an additional candidate source.  The
-    normal ranker still decides the final order.
+    The index can be a JSONL/list of paper metadata or a compact JSON mapping
+    arXiv id to title.  It deliberately does not read benchmark gold labels:
+    it only uses public title/abstract metadata to add local BM25-like and
+    dense-proxy recall before the neural ranker/LLM selector make the decision.
     """
 
-    def __init__(self, path: str, limit: int = 80, min_score: float = 0.10):
+    def __init__(
+        self,
+        path: str,
+        limit: int = 80,
+        min_score: float = 0.10,
+        bm25_top_k: int = 200,
+        dense_top_k: int = 200,
+    ):
         self.path = path
         self.limit = limit
         self.min_score = min_score
+        self.bm25_top_k = bm25_top_k
+        self.dense_top_k = dense_top_k
         self._papers: List[Paper] = []
+        self._doc_terms: List[set[str]] = []
         self._title_terms: List[set[str]] = []
         self._index: Dict[str, List[int]] = {}
         self._df: Counter[str] = Counter()
         self._load()
 
     @classmethod
-    def from_path(cls, path: str, limit: int = 80, min_score: float = 0.10):
-        if not path:
+    def from_path(
+        cls,
+        path: str,
+        limit: int = 80,
+        min_score: float = 0.10,
+        bm25_top_k: int = 200,
+        dense_top_k: int = 200,
+    ):
+        if not path or limit <= 0:
             return None
         p = Path(path)
         if not p.exists():
             return None
-        return cls(str(p), limit=limit, min_score=min_score)
+        return cls(
+            str(p),
+            limit=limit,
+            min_score=min_score,
+            bm25_top_k=bm25_top_k,
+            dense_top_k=dense_top_k,
+        )
 
     def search(self, query: str) -> List[Paper]:
         query_terms = _expanded_pasa_query_terms(query)
@@ -609,56 +660,135 @@ class PasaTitleRetriever:
             return []
 
         scored = []
-        max_scan = max(self.limit * 40, self.limit)
+        max_scan = max(self.limit * 50, self.bm25_top_k + self.dense_top_k, self.limit)
         query_weight = sum(query_idf.values()) or 1.0
         for idx, raw_count in counts.most_common(max_scan):
+            doc_terms = self._doc_terms[idx]
             title_terms = self._title_terms[idx]
-            if not title_terms:
+            if not doc_terms:
                 continue
-            matched = qset & title_terms
+            matched = qset & doc_terms
+            title_matched = qset & title_terms
             idf_hit = sum(query_idf[t] for t in matched)
             idf_coverage = idf_hit / query_weight
-            density = len(matched) / max(1, min(len(title_terms), 14))
-            score = 0.72 * idf_coverage + 0.20 * density
-            score += _pasa_title_concept_bonus(query, self._papers[idx].title)
+            title_coverage = len(title_matched) / max(1, min(len(qset), 12))
+            density = len(matched) / max(1, min(len(doc_terms), 48))
+            bm25_proxy = 0.70 * idf_coverage + 0.22 * title_coverage + 0.08 * density
+            dense_proxy = _conceptual_dense_proxy(query, self._papers[idx], matched, qset)
+            score = max(bm25_proxy, dense_proxy)
             if raw_count >= 4:
                 score += 0.04
             if score >= self.min_score:
-                scored.append((score, self._papers[idx]))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [replace(p, api_score=min(1.0, score)) for score, p in scored[: self.limit]]
+                scored.append((score, bm25_proxy, dense_proxy, self._papers[idx]))
+
+        lexical = sorted(scored, key=lambda x: (x[1], x[0]), reverse=True)[: self.bm25_top_k]
+        conceptual = sorted(scored, key=lambda x: (x[2], x[0]), reverse=True)[: self.dense_top_k]
+        by_key: Dict[str, tuple[float, float, float, Paper]] = {}
+        for item in lexical + conceptual:
+            score, bm25_proxy, dense_proxy, paper = item
+            key = paper.key()
+            current = by_key.get(key)
+            if current is None or score > current[0]:
+                by_key[key] = item
+        merged = sorted(by_key.values(), key=lambda x: x[0], reverse=True)[: self.limit]
+        return [
+            replace(
+                p,
+                api_score=min(1.0, score),
+                bm25_score=min(1.0, bm25_proxy),
+                embedding_score=min(1.0, dense_proxy),
+            )
+            for score, bm25_proxy, dense_proxy, p in merged
+        ]
 
     def _load(self) -> None:
-        data = json.loads(Path(self.path).read_text(encoding="utf-8"))
-        for arxiv_id, value in data.items():
-            if isinstance(value, dict):
-                title = str(value.get("title") or value.get("name") or "")
-                year = value.get("year")
-            else:
-                title = str(value or "")
-                year = None
+        data = _load_index_rows(self.path)
+        for row in data:
+            arxiv_id = str(row.get("paper_id") or row.get("id") or row.get("arxiv_id") or "")
+            title = str(row.get("title") or row.get("name") or "")
+            abstract = str(row.get("abstract") or row.get("abstractText") or "")
+            venue = str(row.get("venue") or row.get("source") or "")
+            url = str(row.get("url") or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""))
+            doi = str(row.get("doi") or (f"10.48550/arXiv.{arxiv_id}" if _normal_arxiv_id(arxiv_id) else ""))
+            year = row.get("year")
             if not title:
                 continue
             idx = len(self._papers)
             paper = Paper(
                 paper_id=str(arxiv_id),
                 title=title,
-                doi=f"10.48550/arXiv.{arxiv_id}",
-                url=f"https://arxiv.org/abs/{arxiv_id}",
+                abstract=abstract,
+                doi=doi,
+                url=url,
                 year=year,
-                source="PaSaTitleDB",
-                publication_type="preprint",
+                source="GeneralAcademicIndex",
+                publication_type=str(row.get("publication_type") or row.get("type") or "preprint"),
+                citation_count=int(row.get("citation_count") or row.get("citationCount") or 0),
             )
             terms = set(_pasa_tokens(title))
+            doc_terms = set(_pasa_tokens(" ".join([title, abstract[:1200], venue])))
             self._papers.append(paper)
+            self._doc_terms.append(doc_terms)
             self._title_terms.append(terms)
-            self._df.update(terms)
-            for term in terms:
+            self._df.update(doc_terms)
+            for term in doc_terms:
                 self._index.setdefault(term, []).append(idx)
 
     def _idf(self, term: str) -> float:
         total = max(1, len(self._papers))
         return math.log((total + 1) / (self._df.get(term, 0) + 1)) + 1.0
+
+
+# Backward-compatible name for older tests/imports.
+PasaTitleRetriever = GeneralAcademicIndexRetriever
+
+
+def _load_index_rows(path: str) -> List[dict]:
+    text = Path(path).read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        data = json.loads(text)
+        return [row for row in data if isinstance(row, dict)]
+    if text.startswith("{"):
+        data = json.loads(text)
+        rows = []
+        for key, value in data.items():
+            if isinstance(value, dict):
+                row = dict(value)
+                row.setdefault("paper_id", key)
+            else:
+                row = {"paper_id": key, "title": str(value or "")}
+            rows.append(row)
+        return rows
+    rows = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _conceptual_dense_proxy(query: str, paper: Paper, matched: set[str], qset: set[str]) -> float:
+    text = " ".join([paper.title, paper.abstract[:900], paper.venue]).lower()
+    title = (paper.title or "").lower()
+    coverage = len(matched) / max(1, min(len(qset), 16))
+    phrase_bonus = _pasa_title_concept_bonus(query, paper.title)
+    exact_bonus = 0.0
+    query_terms = [t for t in _pasa_tokens(query) if t not in _QUERY_STOPWORDS]
+    for n in (5, 4, 3, 2):
+        for i in range(0, max(0, len(query_terms) - n + 1)):
+            phrase = " ".join(query_terms[i : i + n])
+            if phrase and phrase in title:
+                exact_bonus = max(exact_bonus, min(0.18, n * 0.04))
+            elif phrase and phrase in text:
+                exact_bonus = max(exact_bonus, min(0.12, n * 0.03))
+        if exact_bonus:
+            break
+    source_bonus = 0.04 if paper.doi or "arxiv" in (paper.url + paper.paper_id).lower() else 0.0
+    return min(1.0, 0.68 * coverage + phrase_bonus + exact_bonus + source_bonus)
 
 
 def _openalex_abstract(inv: Dict[str, List[int]]) -> str:

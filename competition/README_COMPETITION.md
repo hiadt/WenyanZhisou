@@ -80,6 +80,8 @@ python evaluate_pasa.py --config config.yaml --input data/RealScholarQuery/test.
 `retrieval`：
 - `use_openalex` / `use_semantic_scholar` / `use_arxiv`：是否启用对应学术 API。
 - `use_serper` / `serper_api_key`：是否启用 PaSa 风格 Serper/arXiv 搜索。配置 `SERPER_API_KEY` 后可通过搜索引擎补强 arXiv 页面召回。
+- `general_index_path`：通用公开论文元数据索引路径，可接 JSONL 或 arXiv id 到标题的 JSON 映射；未配置时会自动寻找 `data/general_academic_index/`，并可兼容 PaSa 公开 paper database。
+- `general_index_limit` / `local_bm25_top_k` / `local_dense_top_k`：控制本地 BM25 风格召回和概念召回的候选规模。
 - `per_query`：每个子查询从 API 拉取的论文数。
 - `max_candidates`：候选池最大论文数。
 - `max_rounds`：最多检索轮数；第二轮会根据当前高分候选继续扩展检索式。
@@ -98,6 +100,7 @@ python evaluate_pasa.py --config config.yaml --input data/RealScholarQuery/test.
 - `llm_verifier_weight`：大模型相关性验证权重。
 - `llm_verify_top_n`：送入 LLM verifier 的候选论文数量。
 - `llm_verifier_batch_size`：每次 LLM verifier 判断的论文数量。
+- `meta_ranker_enabled`：启用轻量 meta-ranker，将来源覆盖、标题命中、方法/数据集词重合、引用和年份等特征融合进最终排序。
 
 ## 输出文件
 

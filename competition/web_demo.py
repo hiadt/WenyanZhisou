@@ -175,6 +175,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             "use_arxiv": retrieval.use_arxiv,
             "use_serper": retrieval.use_serper,
             "serper_api_key_configured": bool(retrieval.serper_api_key),
+            "general_index_path": retrieval.general_index_path,
+            "general_index_limit": retrieval.general_index_limit,
             "pasa_id2paper_path": retrieval.pasa_id2paper_path,
             "academic_only": retrieval.academic_only,
             "embedding_model": small.embedding_model,

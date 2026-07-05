@@ -88,36 +88,40 @@ def main() -> None:
 
 
 def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
-    """Apply the v20 balanced competition profile.
+    """Apply the v21 general-index competition profile.
 
-    This restores a broad v18-style candidate pool and LLM selector while
-    preserving v19's cheap intermediate ranking and single neural rerank pass.
+    Keep the efficient v20/v19 execution path, but broaden recall through a
+    neutral local academic index, light citation expansion and a meta-ranker
+    fusion layer.  The profile does not read benchmark gold labels.
     """
 
-    config.retrieval.per_query = 38
-    config.retrieval.max_candidates = 260
-    config.retrieval.min_candidate_pool_size = 150
+    config.retrieval.per_query = 45
+    config.retrieval.max_candidates = 360
+    config.retrieval.min_candidate_pool_size = 200
     config.retrieval.enable_adaptive_second_pass = True
     config.retrieval.use_openalex = True
     config.retrieval.use_semantic_scholar = True
     config.retrieval.use_arxiv = True
     config.retrieval.use_serper = True
     config.retrieval.api_timeout_seconds = 6
-    config.retrieval.pasa_title_limit = 260
-    config.retrieval.pasa_title_min_score = 0.07
+    config.retrieval.general_index_limit = 350
+    config.retrieval.general_index_min_score = 0.06
+    config.retrieval.local_bm25_top_k = 200
+    config.retrieval.local_dense_top_k = 200
+    config.retrieval.pasa_title_limit = 0
     config.retrieval.max_rounds = 1
-    config.retrieval.citation_expand_seeds = 0
-    config.retrieval.citation_expand_limit = 0
-    config.retrieval.serper_top_k = 8
-    config.retrieval.serper_arxiv_limit = 10
+    config.retrieval.citation_expand_seeds = 2
+    config.retrieval.citation_expand_limit = 8
+    config.retrieval.serper_top_k = 10
+    config.retrieval.serper_arxiv_limit = 12
     config.retrieval.serper_query_limit = 1
     config.retrieval.serper_query_variants = 1
     config.retrieval.arxiv_query_limit = 1
     config.retrieval.arxiv_query_variants = 1
     config.retrieval.api_parallelism = 6
     config.retrieval.enable_api_cache = True
-    config.budget.max_api_calls_per_query = 16
-    config.budget.max_latency_seconds = min(config.budget.max_latency_seconds, 70)
+    config.budget.max_api_calls_per_query = 18
+    config.budget.max_latency_seconds = min(config.budget.max_latency_seconds, 90)
     config.ranking.api_weight = 0.08
     config.ranking.bm25_weight = 0.20
     config.ranking.embedding_weight = 0.32
@@ -127,11 +131,16 @@ def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
     config.ranking.diversity_weight = 0.0
     config.ranking.use_rrf = True
     config.ranking.rrf_k = 60
-    config.ranking.rerank_candidate_limit = 120
+    config.ranking.rerank_candidate_limit = 150
+    config.ranking.meta_ranker_enabled = True
+    config.ranking.meta_ranker_weight = 0.45
+    config.ranking.rrf_fusion_weight = 0.30
+    config.ranking.neural_fusion_weight = 0.15
+    config.ranking.llm_fusion_weight = 0.10
     if use_llm:
         config.budget.max_llm_calls_per_query = 3
-        config.ranking.llm_verify_top_n = 30
-        config.ranking.llm_verifier_batch_size = 15
+        config.ranking.llm_verify_top_n = 40
+        config.ranking.llm_verifier_batch_size = 20
         config.ranking.llm_verifier_weight = 0.08
     else:
         config.ranking.llm_verifier_weight = 0.0
