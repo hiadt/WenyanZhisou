@@ -144,11 +144,6 @@ def _intent_alignment_bonus(query: str, p: Paper) -> float:
         hits = sum(1 for group in groups if any(term in text for term in group))
         bonus += min(0.08, hits * 0.025)
 
-    topic_groups = _topic_alignment_groups(q)
-    if topic_groups:
-        hits = sum(1 for group in topic_groups if any(term in text for term in group))
-        bonus += min(0.10, hits * 0.025)
-
     if p.source in {"arXiv", "PaSaTitleDB"} and (p.paper_id or "").strip():
         bonus += 0.015
     return bonus
@@ -168,25 +163,6 @@ def _mentions_smaller_data_llm(query: str) -> bool:
     less_hit = any(x in query for x in ["smaller", "less", "fewer", "limited", "efficient", "pruning", "selection"])
     model_hit = any(x in query for x in ["llm", "language model", "pre-training", "pretraining", "training"])
     return data_hit and less_hit and model_hit
-
-
-def _topic_alignment_groups(query: str) -> List[List[str]]:
-    groups: List[List[str]] = []
-    if "video" in query and any(x in query for x in ["prediction", "generation", "latent", "transformer"]):
-        groups += [["video prediction", "video generation", "latent video"], ["transformer", "autoregressive", "vqgan"]]
-    if "video" in query and any(x in query for x in ["understanding", "caption", "long-form", "long form"]):
-        groups += [["video understanding", "long-form video", "long form video"], ["captioning", "benchmark", "video agent"]]
-    if "agent" in query and any(x in query for x in ["reinforcement", "strategic", "reflexion", "reward"]):
-        groups += [["language agent", "language agents", "llm agent"], ["reinforcement learning", "reflexion", "reward"]]
-    if any(x in query for x in ["ranker", "ranking", "rerank", "relevance judgment"]):
-        groups += [["ranker", "ranking", "reranking"], ["listwise", "zero-shot", "relevance judgment"]]
-    if any(x in query for x in ["watermark", "machine-generated", "generated text"]):
-        groups += [["watermark", "watermarking"], ["generated text", "machine-generated", "detection"]]
-    if any(x in query for x in ["hallucination", "factuality", "faithfulness"]):
-        groups += [["hallucination", "factuality", "faithfulness"], ["selfcheckgpt", "semantic entropy", "black-box"]]
-    if "rag" in query or "retrieval augmented generation" in query:
-        groups += [["retrieval augmented generation", "rag"], ["attribution", "evidence", "evaluation"]]
-    return groups
 
 
 def _diversified_sort(papers: List[Paper], diversity_weight: float) -> List[Paper]:

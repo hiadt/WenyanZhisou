@@ -75,22 +75,6 @@ def extract_gold_items(obj: Dict[str, Any]) -> List[Set[str]]:
                 out.append(aliases)
         return out
 
-    for key in [
-        "gold_ids",
-        "gold_paper_ids",
-        "relevant_ids",
-        "relevant_papers",
-        "positive_pids",
-        "answer_paper_ids",
-        "paper_ids",
-        "references",
-        "reference",
-    ]:
-        if key in obj:
-            items = _gold_items_from_value(obj[key])
-            if items:
-                return items
-
     return [{key} for key in extract_gold_ids(obj)]
 
 
@@ -142,20 +126,6 @@ def _ids_from_value(val: Any) -> Set[str]:
             if val.get(key):
                 out |= normalize_eval_aliases(val[key])
     return out
-
-
-def _gold_items_from_value(val: Any) -> List[Set[str]]:
-    if val is None:
-        return []
-    if isinstance(val, list):
-        out = []
-        for item in val:
-            aliases = _ids_from_value(item)
-            if aliases:
-                out.append(aliases)
-        return out
-    aliases = _ids_from_value(val)
-    return [aliases] if aliases else []
 
 
 def normalize_eval_aliases(value: Any) -> Set[str]:

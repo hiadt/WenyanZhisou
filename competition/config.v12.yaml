@@ -1,5 +1,6 @@
-# Canonical runtime configuration for the v12 competition baseline.
-# Keep API keys in environment variables; do not put secrets in this file.
+# Recovered v12 runtime configuration.
+# Source: acbaf62:competition/config.llm.example.yaml
+# Recorded runtime edit: llm_verify_top_n changed from 30 to 8.
 llm:
   provider: openai_compatible
   base_url: "https://api.deepseek.com/v1"
@@ -53,7 +54,7 @@ ranking:
   authority_weight: 0.06
   recency_weight: 0.03
   diversity_weight: 0.01
-  llm_verify_top_n: 30
+  llm_verify_top_n: 8
   llm_verifier_batch_size: 20
 
 budget:

@@ -27,14 +27,13 @@ class AcademicRetriever:
         self._api_cache: Dict[tuple[str, str], List[Paper]] = {}
         self._serper_queries_used = 0
         self._arxiv_queries_used = 0
-        local_corpus_path = self.config.local_corpus_path or _default_local_corpus_path()
         self._local_retriever = (
             LocalCorpusRetriever(
-                local_corpus_path,
+                self.config.local_corpus_path,
                 self.config.per_query,
                 min_score=self.config.local_min_score,
             )
-            if local_corpus_path
+            if self.config.local_corpus_path
             else None
         )
         self._pasa_retriever = PasaTitleRetriever.from_path(
@@ -49,23 +48,15 @@ class AcademicRetriever:
         self._serper_queries_used = 0
         self._arxiv_queries_used = 0
 
-    def search_many(
-        self,
-        queries: Iterable[str],
-        *,
-        include_local: bool = True,
-        include_online: bool = True,
-    ) -> List[Paper]:
+    def search_many(self, queries: Iterable[str]) -> List[Paper]:
         query_list = list(queries)
         papers: List[Paper] = []
-        if include_local and self._local_retriever:
+        if self._local_retriever:
             for q in query_list:
                 papers.extend(self._local_retriever.search(q))
-        if include_local and self._pasa_retriever:
+        if self._pasa_retriever:
             for q in query_list:
                 papers.extend(self._pasa_retriever.search(q))
-        if not include_online:
-            return deduplicate(papers)
         tasks: List[tuple[Callable[[str], List[Paper]], str]] = []
         for q in query_list:
             if (
@@ -334,7 +325,6 @@ class AcademicRetriever:
             if not title:
                 continue
             external = item.get("externalIds") or {}
-            arxiv_id = external.get("ArXiv") or external.get("Arxiv") or external.get("arXiv") or ""
             publication_types = item.get("publicationTypes") or []
             publication_type = "/".join(str(x) for x in publication_types if x)
             publication_venue = item.get("publicationVenue") or {}
@@ -363,7 +353,7 @@ class AcademicRetriever:
                     authors=[a.get("name", "") for a in item.get("authors", []) if a.get("name")],
                     venue=venue,
                     doi=external.get("DOI", ""),
-                    url=item.get("url") or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""),
+                    url=item.get("url") or "",
                     citation_count=int(item.get("citationCount") or 0),
                     source="SemanticScholar",
                     publication_type=publication_type,
@@ -405,7 +395,6 @@ class AcademicRetriever:
         if not title:
             return []
         external = item.get("externalIds") or {}
-        arxiv_id = external.get("ArXiv") or external.get("Arxiv") or external.get("arXiv") or ""
         publication_types = item.get("publicationTypes") or []
         publication_type = "/".join(str(x) for x in publication_types if x)
         publication_venue = item.get("publicationVenue") or {}
@@ -429,7 +418,7 @@ class AcademicRetriever:
                 authors=[a.get("name", "") for a in item.get("authors", []) if a.get("name")],
                 venue=venue,
                 doi=external.get("DOI", ""),
-                url=item.get("url") or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""),
+                url=item.get("url") or "",
                 citation_count=int(item.get("citationCount") or 0),
                 source="SemanticScholarCitation",
                 publication_type=publication_type,
@@ -482,18 +471,6 @@ def deduplicate(papers: List[Paper]) -> List[Paper]:
         if p.source not in old.source:
             old.source += "+" + p.source
     return list(by_key.values())
-
-
-def _default_local_corpus_path() -> str:
-    """Auto-enable an optional local metadata index when present.
-
-    This keeps the public code simple: competition runs can drop a prepared
-    `data/index/papers.jsonl` into the project and get local BM25-style recall
-    without changing config files.  If the file does not exist, nothing changes.
-    """
-
-    path = Path("data/index/papers.jsonl")
-    return str(path) if path.exists() else ""
 
 
 class LocalCorpusRetriever:
@@ -695,7 +672,6 @@ def _serper_arxiv_queries(query: str) -> List[str]:
                 "emergence in-context learning language models site:arxiv.org/abs",
             ]
         )
-    queries.extend(f"{item} site:arxiv.org/abs" for item in _topic_web_queries(q_lower))
     if q:
         queries.append(f"{q} site:arxiv.org/abs")
     terms = _pasa_tokens(q)
@@ -747,7 +723,6 @@ def _arxiv_queries(query: str) -> List[str]:
                 "all:induction AND all:heads AND all:in-context",
             ]
         )
-    queries.extend(_topic_arxiv_queries(q_lower))
     terms = _pasa_tokens(q)
     if terms:
         focused = [t for t in terms if t not in {"give", "show", "result", "better"}][:7]
@@ -874,7 +849,6 @@ def _expanded_pasa_query_terms(query: str) -> List[str]:
                 "tuning",
             ]
         )
-    terms.update(_concept_expansion_terms(q))
     return [t for t in terms if t and t not in _QUERY_STOPWORDS]
 
 
@@ -906,169 +880,7 @@ def _pasa_title_concept_bonus(query: str, title: str) -> float:
         ]
         hits = sum(1 for group in phrase_groups if any(x in t for x in group))
         bonus += min(0.18, hits * 0.06)
-    for phrase_groups in _topic_phrase_groups(q):
-        hits = sum(1 for group in phrase_groups if any(x in t for x in group))
-        bonus += min(0.18, hits * 0.045)
     return bonus
-
-
-def _topic_web_queries(query: str) -> List[str]:
-    queries: List[str] = []
-    if _mentions_video_prediction(query):
-        queries += [
-            "latent video prediction transformer video generation",
-            "video prediction autoregressive latent transformer",
-            "long video generation time sensitive transformer",
-        ]
-    if _mentions_video_understanding(query):
-        queries += [
-            "long form video understanding benchmark multimodal language model",
-            "video dense captioning events benchmark",
-            "video agent long-form video understanding",
-        ]
-    if _mentions_language_agents_rl(query):
-        queries += [
-            "language agents reinforcement learning strategic play",
-            "verbal reinforcement learning language agents reflexion",
-            "large language model agents reinforcement learning",
-        ]
-    if _mentions_llm_ranker(query):
-        queries += [
-            "large language models zero shot rankers document reranking",
-            "listwise document reranking large language models",
-            "large language models relevance judgment search ranking",
-        ]
-    if _mentions_multimodal_scaling(query):
-        queries += [
-            "multimodal large language model scaling mixture of experts",
-            "scaling multimodal LLM mixture of experts",
-            "large multimodal model data parameters scaling",
-        ]
-    if _mentions_watermarking(query):
-        queries += [
-            "watermarking large language models generated text detection",
-            "robust watermarking framework generative language models",
-            "machine generated text detection watermarking LLM",
-        ]
-    if _mentions_hallucination(query):
-        queries += [
-            "large language model hallucination detection factuality evaluation",
-            "selfcheckgpt black box hallucination detection",
-            "semantic entropy detecting hallucinations language models",
-        ]
-    if _mentions_rag_attribution(query):
-        queries += [
-            "retrieval augmented generation evidence attribution evaluation",
-            "RAG attribution benchmark generated answer evidence",
-            "automatic attribution evaluation retrieval augmented generation",
-        ]
-    return list(dict.fromkeys(queries))
-
-
-def _topic_arxiv_queries(query: str) -> List[str]:
-    out = []
-    for q in _topic_web_queries(query):
-        terms = [t for t in _pasa_tokens(q) if t not in {"site", "arxiv", "abs"}][:7]
-        if terms:
-            out.append(" AND ".join(f"all:{_arxiv_escape(t)}" for t in terms))
-    return list(dict.fromkeys(out))[:6]
-
-
-def _concept_expansion_terms(query: str) -> set[str]:
-    terms: set[str] = set()
-    profile_terms = [
-        (_mentions_video_prediction, ["video", "prediction", "latent", "autoregressive", "transformer", "generation", "vqgan"]),
-        (_mentions_video_understanding, ["video", "understanding", "captioning", "dense", "long-form", "benchmark", "multimodal"]),
-        (_mentions_language_agents_rl, ["agent", "agents", "reinforcement", "learning", "strategic", "reflexion", "verbal", "reward"]),
-        (_mentions_llm_ranker, ["ranker", "rankers", "ranking", "reranking", "listwise", "zero-shot", "relevance", "judgment"]),
-        (_mentions_multimodal_scaling, ["multimodal", "scaling", "mixture", "experts", "moe", "parameters", "data"]),
-        (_mentions_watermarking, ["watermark", "watermarking", "detection", "generated", "text", "machine-generated", "robust"]),
-        (_mentions_hallucination, ["hallucination", "factuality", "faithfulness", "selfcheckgpt", "semantic", "entropy"]),
-        (_mentions_rag_attribution, ["retrieval", "augmented", "generation", "rag", "attribution", "evidence", "benchmark"]),
-    ]
-    for predicate, extra in profile_terms:
-        if predicate(query):
-            terms.update(extra)
-    return terms
-
-
-def _topic_phrase_groups(query: str) -> List[List[List[str]]]:
-    groups: List[List[List[str]]] = []
-    if _mentions_video_prediction(query):
-        groups.append([
-            ["video prediction", "latent video", "video transformer", "autoregressive"],
-            ["video generation", "vqgan", "time-sensitive", "time agnostic"],
-        ])
-    if _mentions_video_understanding(query):
-        groups.append([
-            ["video understanding", "long-form video", "video agent"],
-            ["dense caption", "events in videos", "benchmark"],
-        ])
-    if _mentions_language_agents_rl(query):
-        groups.append([
-            ["language agents", "llm agents", "agent"],
-            ["reinforcement learning", "verbal reinforcement", "reflexion", "strategic"],
-        ])
-    if _mentions_llm_ranker(query):
-        groups.append([
-            ["ranker", "reranking", "ranking"],
-            ["listwise", "zero-shot", "relevance judgment", "document reranking"],
-        ])
-    if _mentions_multimodal_scaling(query):
-        groups.append([
-            ["multimodal", "multi-modal", "large multimodal"],
-            ["scaling", "mixture-of-experts", "mixture of experts", "moe"],
-        ])
-    if _mentions_watermarking(query):
-        groups.append([
-            ["watermark", "watermarking"],
-            ["generated text", "machine-generated", "detection"],
-        ])
-    if _mentions_hallucination(query):
-        groups.append([
-            ["hallucination", "factuality", "faithfulness"],
-            ["selfcheckgpt", "semantic entropy", "black-box"],
-        ])
-    if _mentions_rag_attribution(query):
-        groups.append([
-            ["retrieval augmented generation", "rag"],
-            ["attribution", "evidence", "benchmark"],
-        ])
-    return groups
-
-
-def _mentions_video_prediction(query: str) -> bool:
-    return "video" in query and any(x in query for x in ["prediction", "predict", "generation", "latent", "transformer"])
-
-
-def _mentions_video_understanding(query: str) -> bool:
-    return "video" in query and any(x in query for x in ["understanding", "caption", "long-form", "long form", "benchmark"])
-
-
-def _mentions_language_agents_rl(query: str) -> bool:
-    return any(x in query for x in ["agent", "agents"]) and any(x in query for x in ["reinforcement", "rl", "strategic", "reflexion", "reward"])
-
-
-def _mentions_llm_ranker(query: str) -> bool:
-    return any(x in query for x in ["rank", "ranker", "ranking", "rerank", "relevance judgment", "document reranking"])
-
-
-def _mentions_multimodal_scaling(query: str) -> bool:
-    return any(x in query for x in ["multimodal", "multi-modal"]) and any(x in query for x in ["scaling", "scale", "mixture", "moe", "parameters"])
-
-
-def _mentions_watermarking(query: str) -> bool:
-    return any(x in query for x in ["watermark", "watermarking", "machine-generated", "generated text"])
-
-
-def _mentions_hallucination(query: str) -> bool:
-    return any(x in query for x in ["hallucination", "factuality", "faithfulness", "selfcheckgpt"])
-
-
-def _mentions_rag_attribution(query: str) -> bool:
-    return ("rag" in query or "retrieval augmented generation" in query) and any(
-        x in query for x in ["attribution", "evidence", "evaluation", "benchmark"]
-    )
 
 
 _BAD_PUBLICATION_TYPES = {
