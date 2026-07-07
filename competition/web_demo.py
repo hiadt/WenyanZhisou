@@ -78,7 +78,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/search":
             data = self._read_json()
-            self._search(str(data.get("query") or ""), _int(data.get("top_k"), 10))
+            self._search(str(data.get("query") or ""), _int(data.get("top_k"), 0))
             return
         self._send_json({"error": "not found"}, status=404)
 
@@ -86,6 +86,9 @@ class DemoHandler(BaseHTTPRequestHandler):
         query = query.strip()
         if not query:
             self._send_json({"error": "query is required"}, status=400)
+            return
+        if top_k < 1:
+            self._send_json({"error": "Top K must be between 1 and 20"}, status=400)
             return
         top_k = max(1, min(50, top_k))
         started = time.time()
@@ -611,7 +614,7 @@ HTML = r"""<!doctype html>
       <div class="panel-body">
         <textarea id="query" placeholder="输入论文检索问题或关键词"></textarea>
         <div class="row">
-          <label>Top K <input id="topK" type="number" value="8" min="1" max="50" /></label>
+          <label>Top K <input id="topK" type="number" value="0" min="0" max="20" /></label>
           <button id="searchBtn">搜索论文</button>
         </div>
         <div id="notice" class="notice" style="margin-top:12px;">正在读取服务状态...</div>
@@ -682,13 +685,18 @@ HTML = r"""<!doctype html>
         showTab('papers');
         return;
       }
+      const topK = Number($('topK').value);
+      if (!Number.isInteger(topK) || topK < 1 || topK > 20) {
+        $('notice').innerHTML = '请先把 Top K 设置为 1 到 20 之间的整数。';
+        return;
+      }
       btn.disabled = true;
       btn.textContent = '搜索中...';
       try {
         const res = await fetch('/api/search', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({query: $('query').value, top_k: Number($('topK').value || 8)})
+          body: JSON.stringify({query: $('query').value, top_k: topK})
         });
         current = await res.json();
         if (current.error) throw new Error(current.error);
