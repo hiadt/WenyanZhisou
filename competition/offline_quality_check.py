@@ -124,8 +124,14 @@ def check_pasa_gold_matching() -> None:
         paper_id="https://openalex.org/W2",
         title="When Less is More: Investigating Data Pruning for Pretraining LLMs at Scale",
     )
+    by_fused_source_id = Paper(
+        paper_id="https://openalex.org/W3",
+        title="Different merged title",
+        source_ids=["arXiv:2309.04564"],
+    )
     assert flexible_recall_at([paper_aliases(by_arxiv)], gold_items, 1) == 1.0
     assert flexible_recall_at([paper_aliases(by_title)], gold_items, 1) == 1.0
+    assert flexible_recall_at([paper_aliases(by_fused_source_id)], gold_items, 1) == 1.0
 
 
 def check_pasa_title_retriever() -> None:
@@ -179,36 +185,28 @@ def check_serper_arxiv_helpers() -> None:
 
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
-    expected = {
-        "per_query": cfg.retrieval.per_query,
-        "max_candidates": cfg.retrieval.max_candidates,
-        "max_rounds": cfg.retrieval.max_rounds,
-        "citation_expand_limit": cfg.retrieval.citation_expand_limit,
-        "max_api_calls": cfg.budget.max_api_calls_per_query,
-        "max_llm_calls": cfg.budget.max_llm_calls_per_query,
-        "llm_verify_top_n": cfg.ranking.llm_verify_top_n,
-        "api_weight": cfg.ranking.api_weight,
-        "llm_weight": cfg.ranking.llm_verifier_weight,
-    }
     _apply_formal_eval_defaults(cfg, use_llm=True)
     assert cfg.retrieval.enable_api_cache is True
-    assert cfg.retrieval.api_parallelism >= 6
-    assert cfg.retrieval.per_query == expected["per_query"]
-    assert cfg.retrieval.max_candidates == expected["max_candidates"]
-    assert cfg.retrieval.max_rounds == expected["max_rounds"]
-    assert cfg.retrieval.citation_expand_limit == expected["citation_expand_limit"]
-    assert cfg.budget.max_api_calls_per_query == expected["max_api_calls"]
-    assert cfg.budget.max_llm_calls_per_query == expected["max_llm_calls"]
-    assert cfg.ranking.llm_verify_top_n == expected["llm_verify_top_n"]
-    assert cfg.ranking.api_weight == expected["api_weight"]
-    assert cfg.ranking.llm_verifier_weight == expected["llm_weight"]
+    assert cfg.retrieval.api_parallelism >= 10
+    assert cfg.retrieval.max_candidates == 220
+    assert cfg.retrieval.max_rounds == 1
+    assert cfg.retrieval.citation_expand_limit == 0
+    assert cfg.retrieval.use_gap_driven_evolution is False
+    assert cfg.retrieval.early_stop_enabled is False
+    assert cfg.budget.max_api_calls_per_query == 36
+    assert cfg.budget.max_llm_calls_per_query == 4
+    assert cfg.ranking.llm_verify_top_n == 60
+    assert cfg.ranking.api_weight >= 0.14
+    assert cfg.ranking.llm_verifier_weight >= 0.22
+    assert cfg.ranking.constraint_weight == 0.0
+    assert cfg.ranking.constraint_hard_filter_year is False
 
     v12 = load_config(ROOT / "config.v12.yaml")
     _apply_formal_eval_defaults(v12, use_llm=True)
-    assert v12.retrieval.per_query == 20
-    assert v12.retrieval.max_candidates == 120
-    assert v12.retrieval.max_rounds == 2
-    assert v12.retrieval.citation_expand_limit == 80
+    assert v12.retrieval.per_query == 18
+    assert v12.retrieval.max_candidates == 220
+    assert v12.retrieval.max_rounds == 1
+    assert v12.retrieval.citation_expand_limit == 0
     assert v12.retrieval.use_arxiv is True
     assert v12.retrieval.use_serper is True
     assert v12.retrieval.pasa_title_limit == 80
@@ -216,8 +214,8 @@ def check_formal_eval_defaults() -> None:
     assert v12.ranking.reranker_weight == 0.25
     assert v12.ranking.authority_weight == 0.06
     assert v12.ranking.recency_weight == 0.03
-    assert v12.ranking.llm_verify_top_n == 8
-    assert v12.budget.max_api_calls_per_query == 24
+    assert v12.ranking.llm_verify_top_n == 60
+    assert v12.budget.max_api_calls_per_query == 36
     assert v12.budget.max_llm_calls_per_query == 4
 
 

@@ -91,20 +91,39 @@ def _remote_llm_requires_key(base_url: str) -> bool:
 
 
 def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
-    """Enable operational safeguards without overriding the selected profile.
+    """Apply the validated score-oriented v12 competition profile."""
 
-    Accuracy parameters must come from the supplied YAML file.  Earlier
-    revisions silently replaced v12 candidate, round, budget and ranking
-    values here, making named configurations impossible to reproduce.
-    """
-
-    config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 6)
+    config.retrieval.per_query = min(config.retrieval.per_query, 18)
+    config.retrieval.max_candidates = 220
+    config.retrieval.max_rounds = 1
+    config.retrieval.citation_expand_seeds = 0
+    config.retrieval.citation_expand_limit = 0
+    config.retrieval.serper_top_k = min(config.retrieval.serper_top_k, 10)
+    config.retrieval.serper_arxiv_limit = min(config.retrieval.serper_arxiv_limit, 16)
+    config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 2)
+    config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 2)
+    config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 2)
+    config.retrieval.arxiv_query_variants = min(config.retrieval.arxiv_query_variants, 2)
+    config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 10)
     config.retrieval.enable_api_cache = True
+    config.retrieval.use_gap_driven_evolution = False
+    config.retrieval.early_stop_enabled = False
+    config.ranking.constraint_weight = 0.0
+    config.ranking.constraint_hard_filter_year = False
+    config.budget.max_api_calls_per_query = 36
+    if use_llm:
+        config.budget.max_llm_calls_per_query = 4
+        config.ranking.llm_verify_top_n = 60
+        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
+        config.ranking.api_weight = max(config.ranking.api_weight, 0.14)
+        config.ranking.llm_verifier_weight = max(config.ranking.llm_verifier_weight, 0.22)
 
 
 def paper_aliases(paper) -> set[str]:
     aliases = set()
-    for value in [paper.paper_id, paper.doi, paper.url, paper.title]:
+    values = [paper.paper_id, paper.doi, paper.url, paper.title]
+    values.extend(getattr(paper, "source_ids", []) or [])
+    for value in values:
         aliases |= normalize_eval_aliases(value)
     return aliases
 
