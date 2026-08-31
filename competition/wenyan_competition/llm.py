@@ -113,17 +113,11 @@ class LLMVerifier:
         for idx, p in enumerate(papers, 1):
             chunks.append(
                 f"[{idx}] source={p.source}; paper_id={p.paper_id}; url={p.url}\n"
-                f"title={p.title}\nyear={p.year}; venue={p.venue}\nabstract={p.abstract[:420]}"
+                f"title={p.title}\nyear={p.year}; venue={p.venue}\nabstract={p.abstract[:650]}"
             )
         prompt = f"""
-Judge every paper against the complete academic information need. Use one
-absolute rubric across batches: high=directly satisfies the core topic and
-requested relationship/constraints; partial=addresses only a useful subset;
-irrelevant=topical word overlap without answering the information need.
-
-Return compact JSON only. Include exactly one item for every supplied index;
-do not include explanations or repeat titles:
-{{"items":[{{"index":1,"score":0.0,"label":"high|partial|irrelevant"}}]}}
+Judge paper relevance to the academic query. Return ONLY JSON:
+{{"items":[{{"index":1,"score":0.0-1.0,"label":"high|partial|irrelevant","reason":"..."}}]}}
 
 Query:
 {query}
@@ -164,35 +158,14 @@ Papers:
                     papers[i].relevance_label = str(
                         item.get("label") or item.get("relevance_label") or "candidate"
                     )
-                    papers[i].reason = str(item.get("reason") or _compact_relevance_reason(
-                        papers[i].relevance_label,
-                        score,
-                    ))
+                    papers[i].reason = str(item.get("reason", ""))
                     updated += 1
             if updated == 0 and self.llm is not None:
                 self.llm.warnings.append("LLM verifier returned no usable relevance scores.")
-            elif updated < len(papers) and self.llm is not None:
-                self.llm.warnings.append(
-                    f"LLM verifier scored {updated}/{len(papers)} candidates; "
-                    "unscored candidates retain neural ranking signals."
-                )
         except Exception as exc:
             if self.llm is not None:
                 self.llm.warnings.append(f"LLM verifier failed: {type(exc).__name__}: {exc}")
             return
-
-
-def _compact_relevance_reason(label: str, score: float) -> str:
-    normalized = (label or "candidate").lower()
-    if normalized.startswith("high"):
-        return f"Directly matches the query's core information need (LLM {score:.2f})."
-    if normalized.startswith("partial"):
-        return f"Matches part of the requested topic or constraints (LLM {score:.2f})."
-    if normalized.startswith("irrelevant"):
-        return f"Insufficient evidence of direct relevance (LLM {score:.2f})."
-    return f"Candidate relevance score from the LLM verifier: {score:.2f}."
-
-
 class LLMQueryEvolver:
     def __init__(self, llm: LLMClient | None):
         self.llm = llm

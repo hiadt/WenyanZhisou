@@ -14,13 +14,7 @@ from wenyan_competition.constraints import (
     constraint_gap_queries,
 )
 from wenyan_competition.dataset import extract_gold_items
-from wenyan_competition.llm import (
-    LLMVerifier,
-    _as_dict,
-    _as_list,
-    heuristic_plan,
-    heuristic_synthesis,
-)
+from wenyan_competition.llm import _as_dict, _as_list, heuristic_plan, heuristic_synthesis
 from wenyan_competition.retrievers import (
     AcademicRetriever,
     _arxiv_id_from_url,
@@ -56,7 +50,6 @@ def main() -> None:
         check_constraint_execution_and_coverage,
         check_gap_driven_query_evolution,
         check_normalized_api_cache,
-        check_compact_llm_verifier_covers_every_candidate,
         check_transient_retrieval_retry,
         check_smoke_command,
     ]
@@ -363,33 +356,6 @@ def check_normalized_api_cache() -> None:
     retriever._cached_safe(fake_search, "academic search")
     assert len(calls) == 1
     assert retriever.cache_hits == 1 and retriever.cache_misses == 1
-
-
-def check_compact_llm_verifier_covers_every_candidate() -> None:
-    class FakeLLM:
-        def __init__(self) -> None:
-            self.warnings = []
-
-        def chat(self, messages):
-            assert '"reason"' not in messages[-1]["content"]
-            return json.dumps(
-                {
-                    "items": [
-                        {"index": 1, "score": 0.9, "label": "high"},
-                        {"index": 2, "score": 0.4, "label": "partial"},
-                    ]
-                }
-            )
-
-    papers = [
-        Paper(paper_id="1", title="Direct match"),
-        Paper(paper_id="2", title="Partial match"),
-    ]
-    llm = FakeLLM()
-    LLMVerifier(llm).verify("academic query", papers)
-    assert [paper.llm_score for paper in papers] == [0.9, 0.4]
-    assert all(paper.reason for paper in papers)
-    assert not llm.warnings
 
 
 def check_transient_retrieval_retry() -> None:
