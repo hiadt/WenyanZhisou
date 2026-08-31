@@ -258,6 +258,10 @@ class AcademicRetriever:
             self._inc_api()
             response = requests.get(url, params=request_params, headers=headers, timeout=20)
             last_response = response
+            # A quota/rate response is unlikely to recover within this same
+            # request. Let the caller open the circuit and use Crossref.
+            if response.status_code == 429:
+                response.raise_for_status()
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()
                 return response.json()
