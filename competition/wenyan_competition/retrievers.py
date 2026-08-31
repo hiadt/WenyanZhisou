@@ -159,20 +159,22 @@ class AcademicRetriever:
         author_names = _author_names_from_queries([original_query, *list(expansions)])
         out: List[Paper] = []
         for author_name in author_names[: max(1, self.config.openalex_metadata_author_limit)]:
-            author_id = self._resolve_openalex_author(author_name)
-            if author_id:
-                out.extend(self._search_openalex_author_works(author_id, original_query, years))
+            try:
+                author_id = self._resolve_openalex_author(author_name)
+                if author_id:
+                    out.extend(self._search_openalex_author_works(author_id, original_query, years))
+            except requests.RequestException as exc:
+                with self._lock:
+                    self.warnings.append(
+                        f"OpenAlex metadata lookup failed for author '{author_name}': {exc}"
+                    )
         return deduplicate(out)
 
     def _resolve_openalex_author(self, author_name: str) -> str:
-        self._inc_api()
-        response = requests.get(
+        rows = self._openalex_get_json(
             "https://api.openalex.org/authors",
-            params={"search": author_name, "per-page": 5},
-            timeout=20,
-        )
-        response.raise_for_status()
-        rows = response.json().get("results", [])
+            {"search": author_name, "per-page": 5},
+        ).get("results", [])
         target = normalize_title(author_name)
         exact = [row for row in rows if normalize_title(row.get("display_name", "")) == target]
         chosen = exact[0] if exact else (rows[0] if rows else {})
@@ -184,22 +186,19 @@ class AcademicRetriever:
         original_query: str,
         years: List[int],
     ) -> List[Paper]:
-        self._inc_api()
         filters = [f"author.id:{author_id}"]
         if years:
             filters.extend([
                 f"from_publication_date:{min(years)}-01-01",
                 f"to_publication_date:{max(years)}-12-31",
             ])
-        response = requests.get(
+        data = self._openalex_get_json(
             "https://api.openalex.org/works",
-            params={"filter": ",".join(filters), "per-page": 100, "sort": "cited_by_count:desc"},
-            timeout=20,
+            {"filter": ",".join(filters), "per-page": 100, "sort": "cited_by_count:desc"},
         )
-        response.raise_for_status()
         nature_portfolio = "nature portfolio" in original_query.lower()
         out: List[Paper] = []
-        for item in response.json().get("results", []):
+        for item in data.get("results", []):
             if years and item.get("publication_year") not in years:
                 continue
             source = (item.get("primary_location") or {}).get("source") or {}
@@ -230,6 +229,32 @@ class AcademicRetriever:
                 api_score=1.0,
             ))
         return out
+
+    def _openalex_get_json(self, url: str, params: Dict[str, object]) -> Dict[str, object]:
+        """Call OpenAlex with bounded transient retry and polite identification."""
+
+        request_params = dict(params)
+        if self.config.openalex_mailto:
+            request_params["mailto"] = self.config.openalex_mailto
+        headers = {"User-Agent": "WenyanZhiSou-Academic-Agent/1.0"}
+        last_response = None
+        for attempt in range(3):
+            self._inc_api()
+            response = requests.get(url, params=request_params, headers=headers, timeout=20)
+            last_response = response
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                response.raise_for_status()
+                return response.json()
+            if attempt < 2:
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    delay = min(5.0, max(1.0, float(retry_after)))
+                except ValueError:
+                    delay = 1.5 * (attempt + 1)
+                time.sleep(delay)
+        assert last_response is not None
+        last_response.raise_for_status()
+        return {}
 
     def expand_citation_network(self, seeds: List[Paper], max_api_calls: int) -> List[Paper]:
         """Fetch one-hop reference/citation papers from high-value seeds."""
