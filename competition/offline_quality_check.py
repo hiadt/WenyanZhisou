@@ -6,6 +6,11 @@ import sys
 from pathlib import Path
 
 from wenyan_competition.config import RetrievalConfig, load_config
+from wenyan_competition.constraints import (
+    apply_constraint_policy,
+    build_constraint_coverage,
+    constraint_gap_queries,
+)
 from wenyan_competition.dataset import extract_gold_items
 from wenyan_competition.llm import _as_dict, _as_list, heuristic_plan, heuristic_synthesis
 from wenyan_competition.retrievers import (
@@ -15,8 +20,9 @@ from wenyan_competition.retrievers import (
     _extract_arxiv_ids_from_serper,
     _openalex_api_work_url,
     _serper_arxiv_queries,
+    deduplicate,
 )
-from wenyan_competition.schema import Paper
+from wenyan_competition.schema import Paper, QueryPlan
 from evaluate_pasa import _apply_formal_eval_defaults, flexible_recall_at, paper_aliases
 
 
@@ -38,6 +44,10 @@ def main() -> None:
         check_formal_eval_defaults,
         check_openalex_url_normalization,
         check_citation_fetch_warnings_are_quiet,
+        check_cross_source_identity_fusion,
+        check_constraint_execution_and_coverage,
+        check_gap_driven_query_evolution,
+        check_normalized_api_cache,
         check_smoke_command,
     ]
     for check in checks:
@@ -169,18 +179,46 @@ def check_serper_arxiv_helpers() -> None:
 
 def check_formal_eval_defaults() -> None:
     cfg = load_config(ROOT / "config.smoke.json")
+    expected = {
+        "per_query": cfg.retrieval.per_query,
+        "max_candidates": cfg.retrieval.max_candidates,
+        "max_rounds": cfg.retrieval.max_rounds,
+        "citation_expand_limit": cfg.retrieval.citation_expand_limit,
+        "max_api_calls": cfg.budget.max_api_calls_per_query,
+        "max_llm_calls": cfg.budget.max_llm_calls_per_query,
+        "llm_verify_top_n": cfg.ranking.llm_verify_top_n,
+        "api_weight": cfg.ranking.api_weight,
+        "llm_weight": cfg.ranking.llm_verifier_weight,
+    }
     _apply_formal_eval_defaults(cfg, use_llm=True)
-    assert cfg.ranking.llm_verify_top_n == 60
-    assert cfg.ranking.llm_verifier_batch_size >= 20
-    assert cfg.budget.max_llm_calls_per_query == 4
-    assert cfg.retrieval.max_candidates == 220
-    assert cfg.retrieval.max_rounds == 1
-    assert cfg.retrieval.citation_expand_limit == 0
-    assert cfg.budget.max_api_calls_per_query == 36
-    assert cfg.retrieval.serper_query_limit <= 2
-    assert cfg.retrieval.serper_query_variants <= 2
-    assert cfg.retrieval.arxiv_query_limit <= 2
-    assert cfg.retrieval.arxiv_query_variants <= 2
+    assert cfg.retrieval.enable_api_cache is True
+    assert cfg.retrieval.api_parallelism >= 6
+    assert cfg.retrieval.per_query == expected["per_query"]
+    assert cfg.retrieval.max_candidates == expected["max_candidates"]
+    assert cfg.retrieval.max_rounds == expected["max_rounds"]
+    assert cfg.retrieval.citation_expand_limit == expected["citation_expand_limit"]
+    assert cfg.budget.max_api_calls_per_query == expected["max_api_calls"]
+    assert cfg.budget.max_llm_calls_per_query == expected["max_llm_calls"]
+    assert cfg.ranking.llm_verify_top_n == expected["llm_verify_top_n"]
+    assert cfg.ranking.api_weight == expected["api_weight"]
+    assert cfg.ranking.llm_verifier_weight == expected["llm_weight"]
+
+    v12 = load_config(ROOT / "config.v12.yaml")
+    _apply_formal_eval_defaults(v12, use_llm=True)
+    assert v12.retrieval.per_query == 20
+    assert v12.retrieval.max_candidates == 120
+    assert v12.retrieval.max_rounds == 2
+    assert v12.retrieval.citation_expand_limit == 80
+    assert v12.retrieval.use_arxiv is True
+    assert v12.retrieval.use_serper is True
+    assert v12.retrieval.pasa_title_limit == 80
+    assert v12.ranking.embedding_weight == 0.25
+    assert v12.ranking.reranker_weight == 0.25
+    assert v12.ranking.authority_weight == 0.06
+    assert v12.ranking.recency_weight == 0.03
+    assert v12.ranking.llm_verify_top_n == 8
+    assert v12.budget.max_api_calls_per_query == 24
+    assert v12.budget.max_llm_calls_per_query == 4
 
 
 def check_openalex_url_normalization() -> None:
@@ -192,6 +230,131 @@ def check_citation_fetch_warnings_are_quiet() -> None:
     text = (ROOT / "wenyan_competition" / "retrievers.py").read_text(encoding="utf-8")
     assert "fetch_openalex_work, paper_id, warn=False" in text
     assert "fetch_semantic_scholar_paper, paper_id, warn=False" in text
+
+
+def check_cross_source_identity_fusion() -> None:
+    papers = deduplicate(
+        [
+            Paper(
+                paper_id="https://openalex.org/W1",
+                title="Constraint-Aware Academic Search with Large Language Models",
+                abstract="short",
+                doi="10.48550/arXiv.2401.01234",
+                source="OpenAlex",
+                citation_count=10,
+            ),
+            Paper(
+                paper_id="CorpusId:99",
+                title="Constraint-Aware Academic Search with Large Language Models",
+                abstract="A longer abstract with method, dataset and evaluation evidence.",
+                url="https://arxiv.org/abs/2401.01234v2",
+                source="SemanticScholar",
+                citation_count=20,
+            ),
+        ]
+    )
+    assert len(papers) == 1
+    assert papers[0].source == "OpenAlex+SemanticScholar"
+    assert len(papers[0].source_ids) == 2
+    assert papers[0].citation_count == 20
+    assert papers[0].abstract.startswith("A longer abstract")
+
+
+def check_constraint_execution_and_coverage() -> None:
+    unconstrained = [
+        Paper(paper_id="first", title="First paper", final_score=0.9),
+        Paper(paper_id="second", title="Second paper", final_score=0.8),
+    ]
+    unchanged = apply_constraint_policy(
+        "general academic search",
+        QueryPlan(original_query="general academic search"),
+        unconstrained,
+        top_k=2,
+    )
+    assert [paper.paper_id for paper in unchanged] == ["first", "second"]
+
+    plan = QueryPlan(
+        original_query="Find transformer papers from 2022 to 2024 using BERT on SQuAD.",
+        entities=["transformer"],
+        methods=["BERT"],
+        datasets=["SQuAD"],
+        constraints={"year_range": "2022-2024", "venue": ["ACL"]},
+    )
+    papers = [
+        Paper(
+            paper_id="good",
+            title="BERT Transformer Reasoning on SQuAD",
+            abstract="An ACL study using BERT on the SQuAD dataset.",
+            year=2023,
+            venue="ACL",
+            final_score=0.8,
+        ),
+        Paper(
+            paper_id="old",
+            title="Transformer Language Modeling",
+            abstract="A general transformer paper.",
+            year=2019,
+            venue="NeurIPS",
+            final_score=0.9,
+        ),
+    ]
+    ranked = apply_constraint_policy(
+        plan.original_query,
+        plan,
+        papers,
+        top_k=1,
+        weight=0.04,
+        hard_filter_year=True,
+    )
+    assert [paper.paper_id for paper in ranked] == ["good"]
+    assert ranked[0].constraint_score == 1.0
+    coverage = build_constraint_coverage(plan.original_query, plan, ranked)
+    assert coverage["total_dimensions"] == 5
+    assert coverage["covered_dimensions"] == 5
+
+
+def check_gap_driven_query_evolution() -> None:
+    plan = QueryPlan(
+        original_query="Find transformer reasoning papers using BERT on SQuAD.",
+        intent="transformer reasoning",
+        methods=["BERT"],
+        datasets=["SQuAD"],
+    )
+    missing = [Paper(paper_id="P1", title="General Transformer Reasoning", abstract="No benchmark details.")]
+    queries = constraint_gap_queries(plan.original_query, plan, missing, max_queries=2)
+    assert any("squad" in query.lower() for query in queries)
+    assert any("bert" in query.lower() for query in queries)
+
+    covered = [
+        Paper(
+            paper_id="P2",
+            title="BERT Transformer Reasoning on SQuAD",
+            abstract="BERT is evaluated on the SQuAD benchmark.",
+        )
+    ]
+    assert constraint_gap_queries(plan.original_query, plan, covered, max_queries=2) == []
+
+
+def check_normalized_api_cache() -> None:
+    retriever = AcademicRetriever(
+        RetrievalConfig(
+            use_openalex=False,
+            use_semantic_scholar=False,
+            use_arxiv=False,
+            use_serper=False,
+            pasa_id2paper_path="",
+        )
+    )
+    calls = []
+
+    def fake_search(query: str):
+        calls.append(query)
+        return [Paper(paper_id="cached", title="Cached paper")]
+
+    retriever._cached_safe(fake_search, "  Academic   Search ")
+    retriever._cached_safe(fake_search, "academic search")
+    assert len(calls) == 1
+    assert retriever.cache_hits == 1 and retriever.cache_misses == 1
 
 
 def check_smoke_command() -> None:
@@ -216,6 +379,7 @@ def check_smoke_command() -> None:
     assert data["papers"][0]["paper_id"] == "P1"
     assert data["agent_trace"], "agent trace should document crawler/selector/ranker steps"
     assert {"authority_score", "recency_score", "diversity_score"} <= set(data["papers"][0])
+    assert {"cache_hits", "cache_misses", "retrieval_rounds", "stopped_early", "stop_reason"} <= set(data["stats"])
 
 
 if __name__ == "__main__":

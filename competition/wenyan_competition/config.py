@@ -74,6 +74,14 @@ class RetrievalConfig:
     local_min_score: float = 0.0
     api_parallelism: int = 6
     enable_api_cache: bool = True
+    use_gap_driven_evolution: bool = True
+    gap_query_limit: int = 2
+    gap_api_reserve: int = 4
+    gap_min_coverage: float = 0.25
+    early_stop_enabled: bool = True
+    early_stop_min_candidates: int = 80
+    early_stop_coverage: float = 0.75
+    early_stop_budget_fraction: float = 0.85
 
 
 @dataclass
@@ -88,6 +96,8 @@ class RankingConfig:
     diversity_weight: float = 0.01
     llm_verify_top_n: int = 30
     llm_verifier_batch_size: int = 20
+    constraint_weight: float = 0.04
+    constraint_hard_filter_year: bool = True
 
 
 @dataclass

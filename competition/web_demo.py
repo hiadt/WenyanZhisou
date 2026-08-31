@@ -426,6 +426,33 @@ HTML = r"""<!doctype html>
       padding: 5px 9px;
       font-size: 12px;
     }
+    .chip.match {
+      background: #ecfdf3;
+      border-color: #abefc6;
+      color: #067647;
+    }
+    .chip.miss {
+      background: #fff4ed;
+      border-color: #ffd6ae;
+      color: #b93815;
+    }
+    .coverage-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .coverage-item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px;
+      background: #fbfdff;
+    }
+    .coverage-item b {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
     .results {
       display: grid;
       gap: 10px;
@@ -624,6 +651,7 @@ HTML = r"""<!doctype html>
           <div class="metric"><span class="small">Latency</span><b id="latency">-</b></div>
           <div class="metric"><span class="small">Papers</span><b id="paperCount">-</b></div>
         </div>
+        <div id="runtimeDetail" class="small" style="margin-top:10px;"></div>
       </div>
     </aside>
 
@@ -682,6 +710,7 @@ HTML = r"""<!doctype html>
         $('apiCalls').textContent = '-';
         $('latency').textContent = '-';
         $('paperCount').textContent = '-';
+        $('runtimeDetail').textContent = '';
         showTab('papers');
         return;
       }
@@ -715,8 +744,12 @@ HTML = r"""<!doctype html>
       $('apiCalls').textContent = data.stats?.api_calls ?? 0;
       $('latency').textContent = `${(data.stats?.latency_seconds || 0).toFixed(2)}s`;
       $('paperCount').textContent = papers.length;
+      const stopText = data.stats?.stopped_early && data.stats?.stop_reason
+        ? ` · 提前停止：${data.stats.stop_reason}`
+        : '';
+      $('runtimeDetail').textContent = `检索轮次 ${data.stats?.retrieval_rounds ?? 0} · 缓存命中 ${data.stats?.cache_hits ?? 0}${stopText}`;
       $('raw').textContent = JSON.stringify(data, null, 2);
-      renderPlan(data.plan || {});
+      renderPlan(data.plan || {}, data.constraint_coverage || {});
       renderPapers(papers);
       renderTrace(data.agent_trace || []);
       renderSynthesis(data.synthesis || {}, papers);
@@ -728,8 +761,9 @@ HTML = r"""<!doctype html>
       showTab('papers');
     }
 
-    function renderPlan(plan) {
+    function renderPlan(plan, coverage) {
       const sub = plan.sub_queries || [];
+      const dimensions = Array.isArray(coverage.dimensions) ? coverage.dimensions : [];
       $('plan').innerHTML = `
         <div class="small">Intent</div>
         <h3>${escapeHtml(plan.intent || plan.original_query || '')}</h3>
@@ -737,6 +771,15 @@ HTML = r"""<!doctype html>
         <div class="plan">${(plan.entities || []).map(x => `<span class="chip">${escapeHtml(x)}</span>`).join('')}</div>
         <div class="small" style="margin-top:14px;">Sub Queries</div>
         <div class="plan">${sub.map(x => `<span class="chip">${escapeHtml(x)}</span>`).join('')}</div>
+        <div class="small" style="margin-top:14px;">约束覆盖矩阵</div>
+        ${dimensions.length ? `
+          <div class="coverage-grid">${dimensions.map(row => `
+            <div class="coverage-item">
+              <b>${escapeHtml(row.dimension || '')} · ${fmt(row.coverage)}</b>
+              <div class="small">${escapeHtml((row.requirements || []).join(' / '))}</div>
+              <div class="small">命中 ${Number(row.matched_papers || 0)} / ${Number(row.total_papers || 0)} 篇 · ${escapeHtml(row.status || '')}</div>
+            </div>`).join('')}
+          </div>` : '<div class="small" style="margin-top:8px;">当前查询没有可执行的显式约束。</div>'}
       `;
     }
 
@@ -755,6 +798,11 @@ HTML = r"""<!doctype html>
           </div>
           <div class="meta">${escapeHtml([p.year, p.venue, p.publication_type, p.source, p.paper_id].filter(Boolean).join(' · '))}</div>
           <div class="abstract">${escapeHtml((p.abstract || '').slice(0, 520))}</div>
+          <div class="plan">
+            ${(p.constraint_matches || []).map(x => `<span class="chip match">✓ ${escapeHtml(x)}</span>`).join('')}
+            ${(p.constraint_misses || []).map(x => `<span class="chip miss">△ ${escapeHtml(x)}</span>`).join('')}
+            ${(p.source_ids || []).length > 1 ? `<span class="chip">多源融合 ${p.source_ids.length}</span>` : ''}
+          </div>
           <div class="bars">
             ${bar('API', p.api_score)}
             ${bar('BM25', p.bm25_score)}
@@ -764,6 +812,7 @@ HTML = r"""<!doctype html>
             ${bar('Authority', p.authority_score)}
             ${bar('Recency', p.recency_score)}
             ${bar('Diversity', p.diversity_score)}
+            ${bar('Constraint', p.constraint_score)}
           </div>
         </article>
       `).join('');

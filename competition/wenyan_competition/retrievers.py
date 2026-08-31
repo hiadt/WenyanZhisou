@@ -15,7 +15,7 @@ from urllib.parse import quote
 import requests
 
 from .config import RetrievalConfig
-from .schema import Paper
+from .schema import Paper, normalize_title
 
 
 class AcademicRetriever:
@@ -25,8 +25,12 @@ class AcademicRetriever:
         self.warnings: List[str] = []
         self._lock = threading.Lock()
         self._api_cache: Dict[tuple[str, str], List[Paper]] = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
         self._serper_queries_used = 0
         self._arxiv_queries_used = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
         self._local_retriever = (
             LocalCorpusRetriever(
                 self.config.local_corpus_path,
@@ -435,11 +439,16 @@ class AcademicRetriever:
     def _cached_safe(self, fn, query: str, warn: bool = True) -> List[Paper]:
         if not self.config.enable_api_cache:
             return self._safe(fn, query, warn=warn)
-        key = (fn.__name__, query)
+        normalized_query = re.sub(r"\s+", " ", str(query or "")).strip().lower()
+        key = (fn.__name__, normalized_query)
         with self._lock:
             cached = self._api_cache.get(key)
         if cached is not None:
+            with self._lock:
+                self.cache_hits += 1
             return [replace(p) for p in cached]
+        with self._lock:
+            self.cache_misses += 1
         result = self._safe(fn, query, warn=warn)
         with self._lock:
             self._api_cache[key] = [replace(p) for p in result]
@@ -456,21 +465,100 @@ class AcademicRetriever:
 
 
 def deduplicate(papers: List[Paper]) -> List[Paper]:
-    by_key: Dict[str, Paper] = {}
-    for p in papers:
-        key = p.key()
-        if key not in by_key:
-            by_key[key] = p
-            continue
-        old = by_key[key]
-        if len(p.abstract) > len(old.abstract):
-            old.abstract = p.abstract
-        old.citation_count = max(old.citation_count, p.citation_count)
-        old.references = list(dict.fromkeys(old.references + p.references))
-        old.citations = list(dict.fromkeys(old.citations + p.citations))
-        if p.source not in old.source:
-            old.source += "+" + p.source
-    return list(by_key.values())
+    """Merge the same paper across OpenAlex, S2, arXiv and local sources.
+
+    A source-specific paper id is not a global identity.  We therefore cluster
+    candidates by normalized DOI, arXiv id and sufficiently descriptive exact
+    title.  Metadata and retrieval evidence are merged instead of discarding
+    whichever source arrived later.
+    """
+
+    if not papers:
+        return []
+    parent = list(range(len(papers)))
+    alias_owner: Dict[str, int] = {}
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for index, paper in enumerate(papers):
+        for alias in _identity_aliases(paper):
+            if alias in alias_owner:
+                union(index, alias_owner[alias])
+            else:
+                alias_owner[alias] = index
+
+    groups: Dict[int, List[Paper]] = {}
+    for index, paper in enumerate(papers):
+        groups.setdefault(find(index), []).append(paper)
+    return [_merge_paper_group(group) for group in groups.values()]
+
+
+def _identity_aliases(paper: Paper) -> List[str]:
+    aliases: List[str] = []
+    doi = _normal_doi(paper.doi)
+    if doi:
+        aliases.append("doi:" + doi)
+    for value in [paper.paper_id, paper.doi, paper.url]:
+        arxiv_id = _normal_arxiv_id(value)
+        if arxiv_id:
+            aliases.append("arxiv:" + arxiv_id)
+    title = normalize_title(paper.title)
+    # Short generic titles are unsafe global identifiers.
+    if len(title) >= 24 and len(title.split()) >= 4:
+        aliases.append("title:" + title)
+    return list(dict.fromkeys(aliases or [paper.key()]))
+
+
+def _merge_paper_group(group: List[Paper]) -> Paper:
+    primary = group[0]
+    source_ids = []
+    for paper in group:
+        source_ids.extend(paper.source_ids)
+        if paper.paper_id:
+            source_ids.append(paper.paper_id)
+        if len(paper.title or "") > len(primary.title or ""):
+            primary.title = paper.title
+        if len(paper.abstract or "") > len(primary.abstract or ""):
+            primary.abstract = paper.abstract
+        if len(paper.full_text or "") > len(primary.full_text or ""):
+            primary.full_text = paper.full_text
+        if not primary.year and paper.year:
+            primary.year = paper.year
+        if not primary.venue and paper.venue:
+            primary.venue = paper.venue
+        if not primary.publication_type and paper.publication_type:
+            primary.publication_type = paper.publication_type
+        if not primary.doi and paper.doi:
+            primary.doi = paper.doi
+        if not primary.url and paper.url:
+            primary.url = paper.url
+        primary.authors = list(dict.fromkeys(primary.authors + paper.authors))
+        primary.citation_count = max(primary.citation_count, paper.citation_count)
+        primary.references = list(dict.fromkeys(primary.references + paper.references))
+        primary.citations = list(dict.fromkeys(primary.citations + paper.citations))
+        primary.api_score = max(primary.api_score, paper.api_score)
+        primary.llm_score = max(primary.llm_score, paper.llm_score)
+        if paper.reason and len(paper.reason) > len(primary.reason):
+            primary.reason = paper.reason
+    sources = list(dict.fromkeys(x for paper in group for x in (paper.source or "").split("+") if x))
+    primary.source = "+".join(sources)
+    primary.source_ids = list(dict.fromkeys(source_ids))
+    return primary
+
+
+def _normal_doi(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", value)
+    return value.rstrip(" .,/;")
 
 
 class LocalCorpusRetriever:

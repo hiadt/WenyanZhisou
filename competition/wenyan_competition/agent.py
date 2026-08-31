@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Dict, List, Optional
 
 from .config import AppConfig
+from .constraints import apply_constraint_policy, build_constraint_coverage, constraint_gap_queries
 from .llm import LLMClient, LLMPlanner, LLMQueryEvolver, LLMVerifier, ResultSynthesizer
 from .ranker import CompetitionRanker
 from .retrievers import AcademicRetriever, deduplicate
@@ -58,30 +59,68 @@ class AcademicSearchAgent:
         strategies = self._initial_strategies(query, plan, scoring_query)
 
         candidates: List[Paper] = []
+        retrieval_rounds = 0
+        stopped_early = False
+        stop_reason = ""
         for round_id in range(max(1, self.config.retrieval.max_rounds)):
             if self.retriever.api_calls >= self.config.budget.max_api_calls_per_query:
+                stop_reason = "API budget exhausted"
+                stopped_early = True
                 break
+            round_before_keys = {paper.key() for paper in candidates}
             if round_id == 0:
                 active_strategies = strategies
             else:
-                evolved = self._next_queries(
+                gap_queries = []
+                if self.config.retrieval.use_gap_driven_evolution:
+                    gap_queries = constraint_gap_queries(
+                        query,
+                        plan,
+                        candidates[: max(top_k * 2, 30)],
+                        max_queries=self.config.retrieval.gap_query_limit,
+                        min_coverage=self.config.retrieval.gap_min_coverage,
+                    )
+                evolved = gap_queries or self._next_queries(
                     query,
                     scoring_query,
                     candidates,
                     existing=queries,
                     use_llm=synthesize,
                 )
+                if not evolved:
+                    stopped_early = True
+                    stop_reason = "no useful second-round query"
+                    self._add_trace(
+                        trace,
+                        role="BudgetController",
+                        action="stop retrieval",
+                        detail=stop_reason,
+                        candidates_before=len(candidates),
+                        candidates_after=len(candidates),
+                    )
+                    break
                 active_strategies = [
                     {
-                        "name": "query-evolution",
-                        "detail": "Crawler adjusts search terms from high-scoring papers.",
+                        "name": "coverage-gap evolution" if gap_queries else "query-evolution",
+                        "detail": (
+                            "Crawler targets query dimensions not covered by first-round candidates."
+                            if gap_queries
+                            else "Crawler adjusts search terms from high-scoring papers."
+                        ),
                         "queries": evolved,
                     }
                 ]
                 queries = list(dict.fromkeys(queries + evolved))
 
             for strategy in active_strategies:
-                strategy_queries = self._budgeted_queries(strategy["queries"])
+                reserve = (
+                    self.config.retrieval.gap_api_reserve
+                    if round_id == 0
+                    and self.config.retrieval.use_gap_driven_evolution
+                    and self.config.retrieval.max_rounds > 1
+                    else 0
+                )
+                strategy_queries = self._budgeted_queries(strategy["queries"], reserve=reserve)
                 if not strategy_queries:
                     continue
                 before = len(candidates)
@@ -105,6 +144,10 @@ class AcademicSearchAgent:
                 self.config.retrieval.citation_expand_limit > 0
                 and candidates
                 and self.retriever.api_calls < self.config.budget.max_api_calls_per_query
+                and (
+                    round_id + 1 >= self.config.retrieval.max_rounds
+                    or not self.config.retrieval.use_gap_driven_evolution
+                )
             ):
                 before = len(candidates)
                 expanded = self.retriever.expand_citation_network(
@@ -124,6 +167,33 @@ class AcademicSearchAgent:
                     selected_count=len(expanded),
                 )
             if round_id + 1 >= self.config.retrieval.max_rounds or not candidates:
+                retrieval_rounds = round_id + 1
+                break
+            retrieval_rounds = round_id + 1
+            new_unique = len({paper.key() for paper in candidates} - round_before_keys)
+            round_coverage = build_constraint_coverage(
+                query,
+                plan,
+                candidates[: max(top_k * 2, 30)],
+            )
+            stop_reason = self._retrieval_stop_reason(
+                started=started,
+                candidates=candidates,
+                new_unique=new_unique,
+                coverage=round_coverage,
+                top_k=top_k,
+            )
+            if stop_reason:
+                stopped_early = True
+                self._add_trace(
+                    trace,
+                    role="BudgetController",
+                    action="adaptive early stop",
+                    detail=stop_reason,
+                    candidates_before=len(candidates),
+                    candidates_after=len(candidates),
+                    selected_count=min(top_k, len(candidates)),
+                )
                 break
 
         candidates = candidates[: self.config.retrieval.max_candidates]
@@ -171,6 +241,30 @@ class AcademicSearchAgent:
         candidates = self._filter_textually_related(candidates)
         if not synthesize:
             candidates = self._selector_first_sort(candidates)
+        before_constraints = len(candidates)
+        candidates = apply_constraint_policy(
+            query,
+            plan,
+            candidates,
+            top_k,
+            weight=self.config.ranking.constraint_weight,
+            hard_filter_year=self.config.ranking.constraint_hard_filter_year,
+        )
+        constraint_coverage = build_constraint_coverage(query, plan, candidates[:top_k])
+        if constraint_coverage["total_dimensions"]:
+            self._add_trace(
+                trace,
+                role="ConstraintEngine",
+                action="explicit constraint execution",
+                detail=(
+                    f"Evaluate year, venue, publication type, method, dataset and topic evidence; "
+                    f"covered={constraint_coverage['covered_dimensions']}/"
+                    f"{constraint_coverage['total_dimensions']}."
+                ),
+                candidates_before=before_constraints,
+                candidates_after=len(candidates),
+                selected_count=min(top_k, len(candidates)),
+            )
         self._add_trace(
             trace,
             role="Ranker",
@@ -192,6 +286,11 @@ class AcademicSearchAgent:
             latency_seconds=time.time() - started,
             warnings=list(self.retriever.warnings)
             + (list(self.llm_client.warnings) if self.llm_client else []),
+            cache_hits=self.retriever.cache_hits,
+            cache_misses=self.retriever.cache_misses,
+            retrieval_rounds=retrieval_rounds,
+            stopped_early=stopped_early,
+            stop_reason=stop_reason,
         )
         return SearchOutput(
             query=query,
@@ -201,6 +300,7 @@ class AcademicSearchAgent:
             summary=summary,
             synthesis=synthesis,
             agent_trace=trace,
+            constraint_coverage=constraint_coverage,
         )
 
     def _scoring_query(self, query: str, plan: QueryPlan) -> str:
@@ -338,9 +438,9 @@ class AcademicSearchAgent:
             filtered.append(p)
         return filtered or candidates
 
-    def _budgeted_queries(self, queries: List[str]) -> List[str]:
-        remaining = self.config.budget.max_api_calls_per_query - self.retriever.api_calls
-        if remaining <= 0:
+    def _budgeted_queries(self, queries: List[str], reserve: int = 0) -> List[str]:
+        gross_remaining = self.config.budget.max_api_calls_per_query - self.retriever.api_calls
+        if gross_remaining < 0:
             return []
         selected: List[str] = []
         spent = 0
@@ -354,7 +454,15 @@ class AcademicSearchAgent:
             self.config.retrieval.arxiv_query_limit
             - getattr(self.retriever, "_arxiv_queries_used", 0),
         )
-        for q in _unique([q for q in queries if q]):
+        unique_queries = _unique([q for q in queries if q])
+        if not unique_queries:
+            return []
+        first_cost, _, _ = self._estimated_query_cost(serper_left, arxiv_left)
+        # Never reserve so much that the current round cannot execute one
+        # query. A local-only query has zero API cost and remains executable.
+        effective_reserve = min(max(0, reserve), max(0, gross_remaining - first_cost))
+        remaining = gross_remaining - effective_reserve
+        for q in unique_queries:
             cost, uses_serper, uses_arxiv = self._estimated_query_cost(serper_left, arxiv_left)
             if spent + cost > remaining:
                 break
@@ -386,6 +494,38 @@ class AcademicSearchAgent:
         if uses_arxiv:
             cost += min(3, max(0, self.config.retrieval.arxiv_query_variants))
         return max(0, cost), uses_serper, uses_arxiv
+
+    def _retrieval_stop_reason(
+        self,
+        *,
+        started: float,
+        candidates: List[Paper],
+        new_unique: int,
+        coverage: Dict,
+        top_k: int,
+    ) -> str:
+        retrieval = self.config.retrieval
+        elapsed = time.time() - started
+        latency_limit = max(1.0, float(self.config.budget.max_latency_seconds))
+        if elapsed >= latency_limit * max(0.1, retrieval.early_stop_budget_fraction):
+            return "latency reserve reached; preserve time for verification and synthesis"
+        if not retrieval.early_stop_enabled:
+            return ""
+        candidate_target = min(
+            retrieval.max_candidates,
+            max(top_k * 2, retrieval.early_stop_min_candidates),
+        )
+        enough_candidates = len(candidates) >= candidate_target
+        dimensions_covered = (
+            coverage.get("total_dimensions", 0) > 0
+            and coverage.get("covered_dimensions", 0) == coverage.get("total_dimensions", 0)
+            and coverage.get("overall_coverage", 0.0) >= retrieval.early_stop_coverage
+        )
+        if enough_candidates and dimensions_covered:
+            return "candidate pool is sufficient and all query dimensions are covered"
+        if enough_candidates and new_unique == 0:
+            return "previous round added no new canonical papers"
+        return ""
 
     def _add_trace(
         self,

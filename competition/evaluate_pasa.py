@@ -29,6 +29,11 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if not args.no_llm and _remote_llm_requires_key(config.llm.base_url) and not config.llm.api_key:
+        parser.error(
+            "LLM API key is missing. Run 'source .env' before formal evaluation "
+            "or pass --no_llm for an intentional no-LLM ablation."
+        )
     if not args.no_eval_boost:
         _apply_formal_eval_defaults(config, use_llm=not args.no_llm)
     agent = AcademicSearchAgent(config, use_llm=not args.no_llm, force_fallback_models=args.fallback_models)
@@ -80,36 +85,21 @@ def main() -> None:
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
 
-def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
-    """Use one score-oriented competition setting.
+def _remote_llm_requires_key(base_url: str) -> bool:
+    normalized = (base_url or "").lower()
+    return not any(host in normalized for host in ("127.0.0.1", "localhost", "0.0.0.0"))
 
-    The official scoring gives F1 70%, efficiency 20%, and structured output
-    10%.  This setting keeps PaSa-style multi-source recall and LLM selector
-    verification, but avoids expensive second-round/citation expansion by
-    default because those added latency without stable gains in RealScholarQuery
-    spot checks.
+
+def _apply_formal_eval_defaults(config, use_llm: bool) -> None:
+    """Enable operational safeguards without overriding the selected profile.
+
+    Accuracy parameters must come from the supplied YAML file.  Earlier
+    revisions silently replaced v12 candidate, round, budget and ranking
+    values here, making named configurations impossible to reproduce.
     """
 
-    config.retrieval.per_query = min(config.retrieval.per_query, 18)
-    config.retrieval.max_candidates = 220
-    config.retrieval.max_rounds = 1
-    config.retrieval.citation_expand_seeds = 0
-    config.retrieval.citation_expand_limit = 0
-    config.retrieval.serper_top_k = min(config.retrieval.serper_top_k, 10)
-    config.retrieval.serper_arxiv_limit = min(config.retrieval.serper_arxiv_limit, 16)
-    config.retrieval.serper_query_limit = min(config.retrieval.serper_query_limit, 2)
-    config.retrieval.serper_query_variants = min(config.retrieval.serper_query_variants, 2)
-    config.retrieval.arxiv_query_limit = min(config.retrieval.arxiv_query_limit, 2)
-    config.retrieval.arxiv_query_variants = min(config.retrieval.arxiv_query_variants, 2)
-    config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 10)
+    config.retrieval.api_parallelism = max(config.retrieval.api_parallelism, 6)
     config.retrieval.enable_api_cache = True
-    config.budget.max_api_calls_per_query = 36
-    if use_llm:
-        config.budget.max_llm_calls_per_query = 4
-        config.ranking.llm_verify_top_n = 60
-        config.ranking.llm_verifier_batch_size = max(config.ranking.llm_verifier_batch_size, 20)
-        config.ranking.api_weight = max(config.ranking.api_weight, 0.14)
-        config.ranking.llm_verifier_weight = max(config.ranking.llm_verifier_weight, 0.22)
 
 
 def paper_aliases(paper) -> set[str]:

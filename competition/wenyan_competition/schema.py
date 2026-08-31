@@ -43,6 +43,12 @@ class Paper:
     final_score: float = 0.0
     relevance_label: str = "candidate"
     reason: str = ""
+    source_ids: List[str] = field(default_factory=list)
+    constraint_score: float = 0.0
+    constraint_coverage: float = 0.0
+    constraint_matches: List[str] = field(default_factory=list)
+    constraint_misses: List[str] = field(default_factory=list)
+    constraint_unknown: List[str] = field(default_factory=list)
 
     def text(self) -> str:
         return " ".join(
@@ -70,6 +76,11 @@ class AgentStats:
     estimated_completion_tokens: int = 0
     latency_seconds: float = 0.0
     warnings: List[str] = field(default_factory=list)
+    cache_hits: int = 0
+    cache_misses: int = 0
+    retrieval_rounds: int = 0
+    stopped_early: bool = False
+    stop_reason: str = ""
 
 
 @dataclass
@@ -93,6 +104,7 @@ class SearchOutput:
     summary: str = ""
     synthesis: Dict[str, Any] = field(default_factory=dict)
     agent_trace: List[AgentTrace] = field(default_factory=list)
+    constraint_coverage: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -103,6 +115,7 @@ class SearchOutput:
             "summary": self.summary,
             "synthesis": self.synthesis,
             "agent_trace": [asdict(x) for x in self.agent_trace],
+            "constraint_coverage": self.constraint_coverage,
         }
 
 
