@@ -30,6 +30,7 @@ class AcademicRetriever:
         self.cache_misses = 0
         self._serper_queries_used = 0
         self._arxiv_queries_used = 0
+        self._openalex_metadata_blocked_until = 0.0
         self.cache_hits = 0
         self.cache_misses = 0
         self._local_retriever = (
@@ -160,13 +161,16 @@ class AcademicRetriever:
         out: List[Paper] = []
         for author_name in author_names[: max(1, self.config.openalex_metadata_author_limit)]:
             author_papers: List[Paper] = []
-            try:
-                author_papers = self._search_openalex_author_works(author_name, original_query, years)
-            except requests.RequestException as exc:
-                with self._lock:
-                    self.warnings.append(
-                        f"OpenAlex metadata lookup failed for author '{author_name}': {exc}"
-                    )
+            if time.monotonic() >= self._openalex_metadata_blocked_until:
+                try:
+                    author_papers = self._search_openalex_author_works(author_name, original_query, years)
+                except requests.RequestException as exc:
+                    if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+                        self._openalex_metadata_blocked_until = time.monotonic() + 60.0
+                    with self._lock:
+                        self.warnings.append(
+                            f"OpenAlex metadata lookup failed for author '{author_name}': {exc}"
+                        )
             if not author_papers:
                 try:
                     author_papers = self._search_crossref_author_works(author_name, original_query, years)
