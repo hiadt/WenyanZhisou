@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import requests
+
 from wenyan_competition.config import RetrievalConfig, load_config
 from wenyan_competition.constraints import (
     apply_constraint_policy,
@@ -12,7 +14,13 @@ from wenyan_competition.constraints import (
     constraint_gap_queries,
 )
 from wenyan_competition.dataset import extract_gold_items
-from wenyan_competition.llm import _as_dict, _as_list, heuristic_plan, heuristic_synthesis
+from wenyan_competition.llm import (
+    LLMVerifier,
+    _as_dict,
+    _as_list,
+    heuristic_plan,
+    heuristic_synthesis,
+)
 from wenyan_competition.retrievers import (
     AcademicRetriever,
     _arxiv_id_from_url,
@@ -48,6 +56,8 @@ def main() -> None:
         check_constraint_execution_and_coverage,
         check_gap_driven_query_evolution,
         check_normalized_api_cache,
+        check_compact_llm_verifier_covers_every_candidate,
+        check_transient_retrieval_retry,
         check_smoke_command,
     ]
     for check in checks:
@@ -353,6 +363,58 @@ def check_normalized_api_cache() -> None:
     retriever._cached_safe(fake_search, "academic search")
     assert len(calls) == 1
     assert retriever.cache_hits == 1 and retriever.cache_misses == 1
+
+
+def check_compact_llm_verifier_covers_every_candidate() -> None:
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.warnings = []
+
+        def chat(self, messages):
+            assert '"reason"' not in messages[-1]["content"]
+            return json.dumps(
+                {
+                    "items": [
+                        {"index": 1, "score": 0.9, "label": "high"},
+                        {"index": 2, "score": 0.4, "label": "partial"},
+                    ]
+                }
+            )
+
+    papers = [
+        Paper(paper_id="1", title="Direct match"),
+        Paper(paper_id="2", title="Partial match"),
+    ]
+    llm = FakeLLM()
+    LLMVerifier(llm).verify("academic query", papers)
+    assert [paper.llm_score for paper in papers] == [0.9, 0.4]
+    assert all(paper.reason for paper in papers)
+    assert not llm.warnings
+
+
+def check_transient_retrieval_retry() -> None:
+    retriever = AcademicRetriever(
+        RetrievalConfig(
+            use_openalex=False,
+            use_semantic_scholar=False,
+            use_arxiv=False,
+            use_serper=False,
+            pasa_id2paper_path="",
+        )
+    )
+    calls = 0
+
+    def flaky_search(query: str):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise requests.ConnectionError("temporary reset")
+        return [Paper(paper_id="recovered", title="Recovered paper")]
+
+    papers = retriever._safe(flaky_search, "retry query")
+    assert calls == 2
+    assert papers and papers[0].paper_id == "recovered"
+    assert not retriever.warnings
 
 
 def check_smoke_command() -> None:

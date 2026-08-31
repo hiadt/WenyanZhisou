@@ -4,6 +4,7 @@ import json
 import math
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -455,13 +456,19 @@ class AcademicRetriever:
         return result
 
     def _safe(self, fn, query: str, warn: bool = True) -> List[Paper]:
-        try:
-            return fn(query)
-        except Exception as exc:
-            if warn:
-                with self._lock:
-                    self.warnings.append(f"{fn.__name__} failed for query '{query}': {exc}")
-            return []
+        for attempt in range(2):
+            try:
+                return fn(query)
+            except Exception as exc:
+                transient = isinstance(exc, requests.RequestException)
+                if attempt == 0 and transient:
+                    time.sleep(0.35)
+                    continue
+                if warn:
+                    with self._lock:
+                        self.warnings.append(f"{fn.__name__} failed for query '{query}': {exc}")
+                return []
+        return []
 
 
 def deduplicate(papers: List[Paper]) -> List[Paper]:
