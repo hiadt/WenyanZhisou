@@ -6,6 +6,7 @@ __pycache__/
 
 # Large local datasets and model/runtime outputs.
 competition/data/pasa-dataset/
+competition/data/asta-bench/
 competition/runs/
 competition/checkpoints/
 competition/models/

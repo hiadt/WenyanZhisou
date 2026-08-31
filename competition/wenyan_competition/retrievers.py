@@ -322,6 +322,7 @@ class AcademicRetriever:
         fields = ",".join(
             [
                 "paperId",
+                "corpusId",
                 "title",
                 "abstract",
                 "year",
@@ -382,6 +383,11 @@ class AcademicRetriever:
                     url=item.get("url") or "",
                     citation_count=int(item.get("citationCount") or 0),
                     source="SemanticScholar",
+                    source_ids=(
+                        [f"CorpusId:{item['corpusId']}"]
+                        if item.get("corpusId") is not None
+                        else []
+                    ),
                     publication_type=publication_type,
                     references=[x.get("paperId", "") for x in (item.get("references") or []) if x.get("paperId")],
                     citations=[x.get("paperId", "") for x in (item.get("citations") or []) if x.get("paperId")],
@@ -395,6 +401,7 @@ class AcademicRetriever:
         fields = ",".join(
             [
                 "paperId",
+                "corpusId",
                 "title",
                 "abstract",
                 "year",
@@ -447,6 +454,11 @@ class AcademicRetriever:
                 url=item.get("url") or "",
                 citation_count=int(item.get("citationCount") or 0),
                 source="SemanticScholarCitation",
+                source_ids=(
+                    [f"CorpusId:{item['corpusId']}"]
+                    if item.get("corpusId") is not None
+                    else []
+                ),
                 publication_type=publication_type,
                 references=[x.get("paperId", "") for x in (item.get("references") or []) if x.get("paperId")],
                 citations=[x.get("paperId", "") for x in (item.get("citations") or []) if x.get("paperId")],

@@ -34,6 +34,15 @@ from benchmark_dense_title_retrieval import (
     recall_metrics,
     reciprocal_rank_fusion,
 )
+from evaluate_asta_paper_finder import (
+    AstaSample,
+    build_asta_output,
+    diagnostic_metrics,
+    direct_corpus_id,
+    extract_known_corpus_ids,
+    load_asta_samples,
+    semantic_scholar_lookup_id,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -62,6 +71,7 @@ def main() -> None:
         check_selector_training_parser,
         check_dense_title_benchmark_helpers,
         check_title_rrf_fusion,
+        check_asta_paper_finder_adapter,
         check_smoke_command,
     ]
     for check in checks:
@@ -446,6 +456,64 @@ def check_title_rrf_fusion() -> None:
     fused = fuse_title_results([lexical, dense], limit=3, rrf_k=60)
     assert [paper.paper_id for paper in fused] == ["b", "a", "c"]
     assert fused[0].api_score == 1.0
+
+
+def check_asta_paper_finder_adapter() -> None:
+    fixture = ROOT / "runs" / "asta_adapter_fixture.json"
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text(
+        json.dumps(
+            [
+                {
+                    "input": {"query_id": "specific_demo", "query": "find the target paper"},
+                    "scorer_criteria": {"corpus_ids": ["12345"]},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    try:
+        samples = load_asta_samples(fixture)
+    finally:
+        fixture.unlink(missing_ok=True)
+    assert len(samples) == 1 and samples[0].query_id == "specific_demo"
+
+    direct = Paper(
+        paper_id="a" * 40,
+        title="Target Paper",
+        abstract="Verbatim abstract evidence.",
+        year=2024,
+        source_ids=["CorpusId:12345"],
+    )
+    doi_paper = Paper(paper_id="openalex:1", title="DOI Paper", doi="10.1000/example")
+    assert direct_corpus_id(direct) == "12345"
+    assert semantic_scholar_lookup_id(doi_paper) == "DOI:10.1000/example"
+
+    output = build_asta_output("specific_demo", [(direct, "12345")], limit=30)
+    result_rows = output["output"]["results"]
+    assert result_rows[0]["paper_id"] == "12345"
+    assert "Title: Target Paper" in result_rows[0]["markdown_evidence"]
+    assert "Verbatim abstract evidence." in result_rows[0]["markdown_evidence"]
+
+    sample = AstaSample(
+        query_id="specific_demo",
+        query="find the target paper",
+        scorer_criteria={"corpus_ids": ["12345", "67890"]},
+        raw={},
+    )
+    metrics = diagnostic_metrics(
+        sample,
+        result_rows,
+        retrieved_count=2,
+        agent_api_calls=3,
+        llm_calls=1,
+        resolver_api_calls=1,
+        resolver_failures=0,
+        latency_seconds=2.0,
+    )
+    assert extract_known_corpus_ids(sample.scorer_criteria) == {"12345", "67890"}
+    assert metrics["known_hits@30"] == 1.0
+    assert metrics["known_coverage@30"] == 0.5
 
 
 def check_smoke_command() -> None:
