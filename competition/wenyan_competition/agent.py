@@ -416,7 +416,7 @@ class AcademicSearchAgent:
             elif label.startswith("irrelevant"):
                 label_bonus = -0.35
             family = _source_family(p.source)
-            source_bonus = 0.18 if family in {"SemanticScholarExact", "OpenAlexMetadata"} else (
+            source_bonus = 0.18 if family in {"SemanticScholarExact", "OpenAlexMetadata", "CrossrefMetadata"} else (
                 0.025 if family in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
             )
             score_value = (
@@ -448,6 +448,7 @@ class AcademicSearchAgent:
         priority_sources = [
             "SemanticScholarExact",
             "OpenAlexMetadata",
+            "CrossrefMetadata",
             "SerperArxiv",
             "arXiv",
             "PaSaTitleDB",
@@ -653,7 +654,7 @@ def _unique(items: List[str]) -> List[str]:
 
 def _source_family(source: str) -> str:
     source = source or "unknown"
-    for family in ["SemanticScholarExact", "OpenAlexMetadata", "SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]:
+    for family in ["SemanticScholarExact", "OpenAlexMetadata", "CrossrefMetadata", "SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]:
         if family in source:
             return family
     return source

@@ -159,13 +159,23 @@ class AcademicRetriever:
         author_names = _author_names_from_queries([original_query, *list(expansions)])
         out: List[Paper] = []
         for author_name in author_names[: max(1, self.config.openalex_metadata_author_limit)]:
+            author_papers: List[Paper] = []
             try:
-                out.extend(self._search_openalex_author_works(author_name, original_query, years))
+                author_papers = self._search_openalex_author_works(author_name, original_query, years)
             except requests.RequestException as exc:
                 with self._lock:
                     self.warnings.append(
                         f"OpenAlex metadata lookup failed for author '{author_name}': {exc}"
                     )
+            if not author_papers:
+                try:
+                    author_papers = self._search_crossref_author_works(author_name, original_query, years)
+                except requests.RequestException as exc:
+                    with self._lock:
+                        self.warnings.append(
+                            f"Crossref metadata lookup failed for author '{author_name}': {exc}"
+                        )
+            out.extend(author_papers)
         return deduplicate(out)
 
     def _search_openalex_author_works(
@@ -182,6 +192,8 @@ class AcademicRetriever:
                 f"from_publication_date:{min(years)}-01-01",
                 f"to_publication_date:{max(years)}-12-31",
             ])
+        elif self.config.openalex_metadata_max_year > 0:
+            filters.append(f"to_publication_date:{self.config.openalex_metadata_max_year}-12-31")
         data = self._openalex_get_json(
             "https://api.openalex.org/works",
             {"filter": ",".join(filters), "per-page": 200, "sort": "cited_by_count:desc"},
@@ -191,6 +203,12 @@ class AcademicRetriever:
         out: List[Paper] = []
         for item in data.get("results", []):
             if years and item.get("publication_year") not in years:
+                continue
+            if (
+                not years
+                and self.config.openalex_metadata_max_year > 0
+                and (item.get("publication_year") or 0) > self.config.openalex_metadata_max_year
+            ):
                 continue
             source = (item.get("primary_location") or {}).get("source") or {}
             if nature_portfolio and str(source.get("host_organization_name") or "").lower() != "nature portfolio":
@@ -249,6 +267,79 @@ class AcademicRetriever:
         assert last_response is not None
         last_response.raise_for_status()
         return {}
+
+    def _search_crossref_author_works(
+        self,
+        author_name: str,
+        original_query: str,
+        years: List[int],
+    ) -> List[Paper]:
+        """Fallback for author metadata when OpenAlex is rate limited."""
+
+        params: Dict[str, object] = {
+            "query.author": author_name,
+            "rows": 1000,
+            "select": "DOI,title,author,published,publisher,container-title,type,URL,is-referenced-by-count",
+        }
+        if years:
+            params["filter"] = (
+                f"from-pub-date:{min(years)}-01-01,until-pub-date:{max(years)}-12-31"
+            )
+        elif self.config.openalex_metadata_max_year > 0:
+            params["filter"] = f"until-pub-date:{self.config.openalex_metadata_max_year}-12-31"
+        self._inc_api()
+        response = requests.get(
+            "https://api.crossref.org/works",
+            params=params,
+            headers={"User-Agent": "WenyanZhiSou-Academic-Agent/1.0"},
+            timeout=25,
+        )
+        response.raise_for_status()
+        normalized_author = normalize_title(author_name)
+        nature_portfolio = "nature portfolio" in original_query.lower()
+        naacl = "naacl" in original_query.lower()
+        out: List[Paper] = []
+        for item in response.json().get("message", {}).get("items", []):
+            authors = [
+                " ".join(filter(None, [entry.get("given", ""), entry.get("family", "")])).strip()
+                for entry in item.get("author", [])
+            ]
+            if normalized_author not in {normalize_title(name) for name in authors}:
+                continue
+            date_parts = ((item.get("published") or {}).get("date-parts") or [[]])[0]
+            year = int(date_parts[0]) if date_parts else None
+            if years and year not in years:
+                continue
+            venue = ((item.get("container-title") or [""])[0] or "").strip()
+            publisher = str(item.get("publisher") or "")
+            venue_text = f"{publisher} {venue}".lower()
+            if nature_portfolio:
+                portfolio_venue = bool(re.search(
+                    r"^(?:nature\b|scientific reports\b|npj\b|communications (?:biology|medicine|physics|chemistry|earth))",
+                    venue.lower(),
+                )) or publisher.lower() == "nature portfolio"
+                if not portfolio_venue:
+                    continue
+            if naacl and not ("naacl" in venue_text or "north american chapter" in venue_text):
+                continue
+            title = ((item.get("title") or [""])[0] or "").strip()
+            doi = str(item.get("DOI") or "")
+            if not title:
+                continue
+            out.append(Paper(
+                paper_id=f"DOI:{doi}" if doi else item.get("URL", ""),
+                title=title,
+                year=year,
+                authors=authors,
+                venue=venue,
+                doi=doi,
+                url=item.get("URL", ""),
+                citation_count=int(item.get("is-referenced-by-count") or 0),
+                source="CrossrefMetadata",
+                publication_type=str(item.get("type") or ""),
+                api_score=0.95,
+            ))
+        return out
 
     def expand_citation_network(self, seeds: List[Paper], max_api_calls: int) -> List[Paper]:
         """Fetch one-hop reference/citation papers from high-value seeds."""

@@ -25,6 +25,8 @@ retrieval:
   semantic_scholar_exact_query_limit: 1
   use_openalex_metadata_constraints: true
   openalex_metadata_author_limit: 4
+  # Asta literature tasks use a fixed, date-restricted corpus snapshot.
+  openalex_metadata_max_year: 2024
   use_arxiv: true
   use_serper: true
   openalex_mailto: ""
