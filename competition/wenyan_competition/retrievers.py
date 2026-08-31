@@ -160,9 +160,7 @@ class AcademicRetriever:
         out: List[Paper] = []
         for author_name in author_names[: max(1, self.config.openalex_metadata_author_limit)]:
             try:
-                author_id = self._resolve_openalex_author(author_name)
-                if author_id:
-                    out.extend(self._search_openalex_author_works(author_id, original_query, years))
+                out.extend(self._search_openalex_author_works(author_name, original_query, years))
             except requests.RequestException as exc:
                 with self._lock:
                     self.warnings.append(
@@ -170,23 +168,15 @@ class AcademicRetriever:
                     )
         return deduplicate(out)
 
-    def _resolve_openalex_author(self, author_name: str) -> str:
-        rows = self._openalex_get_json(
-            "https://api.openalex.org/authors",
-            {"search": author_name, "per-page": 5},
-        ).get("results", [])
-        target = normalize_title(author_name)
-        exact = [row for row in rows if normalize_title(row.get("display_name", "")) == target]
-        chosen = exact[0] if exact else (rows[0] if rows else {})
-        return str(chosen.get("id") or "").rsplit("/", 1)[-1]
-
     def _search_openalex_author_works(
         self,
-        author_id: str,
+        author_name: str,
         original_query: str,
         years: List[int],
     ) -> List[Paper]:
-        filters = [f"author.id:{author_id}"]
+        # raw_author_name.search is a single-hop author filter. It avoids a
+        # separate author-identity request and still handles common initials.
+        filters = [f"raw_author_name.search:{author_name}"]
         if years:
             filters.extend([
                 f"from_publication_date:{min(years)}-01-01",
@@ -194,15 +184,23 @@ class AcademicRetriever:
             ])
         data = self._openalex_get_json(
             "https://api.openalex.org/works",
-            {"filter": ",".join(filters), "per-page": 100, "sort": "cited_by_count:desc"},
+            {"filter": ",".join(filters), "per-page": 200, "sort": "cited_by_count:desc"},
         )
         nature_portfolio = "nature portfolio" in original_query.lower()
+        normalized_author = normalize_title(author_name)
         out: List[Paper] = []
         for item in data.get("results", []):
             if years and item.get("publication_year") not in years:
                 continue
             source = (item.get("primary_location") or {}).get("source") or {}
             if nature_portfolio and str(source.get("host_organization_name") or "").lower() != "nature portfolio":
+                continue
+            author_display_names = [
+                authorship.get("author", {}).get("display_name", "")
+                for authorship in item.get("authorships", [])
+                if authorship.get("author", {}).get("display_name")
+            ]
+            if normalized_author not in {normalize_title(name) for name in author_display_names}:
                 continue
             title = item.get("title") or item.get("display_name") or ""
             if not title:
@@ -213,11 +211,7 @@ class AcademicRetriever:
                 title=title,
                 abstract=_openalex_abstract(item.get("abstract_inverted_index") or {}),
                 year=item.get("publication_year"),
-                authors=[
-                    authorship.get("author", {}).get("display_name", "")
-                    for authorship in item.get("authorships", [])
-                    if authorship.get("author", {}).get("display_name")
-                ],
+                authors=author_display_names,
                 venue=venue,
                 doi=(item.get("doi") or "").replace("https://doi.org/", ""),
                 url=((item.get("primary_location") or {}).get("landing_page_url") or item.get("id") or ""),
