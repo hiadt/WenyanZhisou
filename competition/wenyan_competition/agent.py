@@ -60,7 +60,7 @@ class AcademicSearchAgent:
 
         candidates: List[Paper] = self.retriever.search_exact_bibliographic(
             query,
-            [plan.intent, *(plan.sub_queries or [])],
+            plan.sub_queries or [plan.intent],
         )
         if candidates:
             self._add_trace(
@@ -398,7 +398,10 @@ class AcademicSearchAgent:
                 label_bonus = 0.12
             elif label.startswith("irrelevant"):
                 label_bonus = -0.35
-            source_bonus = 0.025 if _source_family(p.source) in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            family = _source_family(p.source)
+            source_bonus = 0.18 if family == "SemanticScholarExact" else (
+                0.025 if family in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
+            )
             score_value = (
                 p.llm_score
                 + label_bonus
@@ -425,7 +428,14 @@ class AcademicSearchAgent:
         # high-recall sources such as arXiv/PaSaTitleDB from being crowded out
         # by OpenAlex/Semantic Scholar candidates before the LLM can judge them.
         per_source = max(1, limit // max(1, len(buckets)))
-        priority_sources = ["SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]
+        priority_sources = [
+            "SemanticScholarExact",
+            "SerperArxiv",
+            "arXiv",
+            "PaSaTitleDB",
+            "SemanticScholar",
+            "OpenAlex",
+        ]
         ordered_sources = priority_sources + [s for s in buckets if s not in priority_sources]
         for source in ordered_sources:
             for p in buckets.get(source, [])[:per_source]:
@@ -625,7 +635,7 @@ def _unique(items: List[str]) -> List[str]:
 
 def _source_family(source: str) -> str:
     source = source or "unknown"
-    for family in ["SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]:
+    for family in ["SemanticScholarExact", "SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]:
         if family in source:
             return family
     return source

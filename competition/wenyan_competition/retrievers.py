@@ -128,7 +128,9 @@ class AcademicRetriever:
             or not _looks_like_bibliographic_lookup(original_query)
         ):
             return []
-        queries = [original_query, *list(expansions)]
+        # The planner is instructed to place the canonical title first. Try it
+        # before the noisy user shorthand so one successful request is enough.
+        queries = [*list(expansions), original_query]
         queries = list(dict.fromkeys(_clean_exact_query(item) for item in queries if item.strip()))
         out: List[Paper] = []
         for query in queries[: max(1, self.config.semantic_scholar_exact_query_limit)]:
