@@ -1,6 +1,8 @@
 # Cross-dataset validation profile. The PaSa-validated dense retrieval path is
-# unchanged; only conservative exact bibliographic lookup is enabled for
-# explicitly named-paper queries.
+# unchanged. Conservative exact bibliographic lookup is enabled for explicitly
+# named-paper queries. Structured metadata lookup remains implemented but is
+# disabled here because public endpoints could not resolve it reliably under
+# rate limits; enable it only for a controlled retest with stable API access.
 
 llm:
   provider: openai_compatible
@@ -23,7 +25,7 @@ retrieval:
   use_semantic_scholar: true
   use_semantic_scholar_exact_match: true
   semantic_scholar_exact_query_limit: 1
-  use_openalex_metadata_constraints: true
+  use_openalex_metadata_constraints: false
   openalex_metadata_author_limit: 4
   # Asta literature tasks use a fixed, date-restricted corpus snapshot.
   openalex_metadata_max_year: 2024
