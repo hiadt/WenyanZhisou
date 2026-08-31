@@ -72,7 +72,17 @@ def download_split(split: str, output: Path, *, allow_test: bool = False) -> Pat
         raise ValueError("Test download is disabled during development; use validation instead.")
     token = os.getenv("HF_ACCESS_TOKEN") or os.getenv("HF_TOKEN")
     if not token:
-        raise RuntimeError("Set HF_ACCESS_TOKEN or HF_TOKEN before downloading AstaBench.")
+        try:
+            from huggingface_hub import HfFolder
+
+            token = HfFolder.get_token()
+        except (ImportError, OSError):
+            token = None
+    if not token:
+        raise RuntimeError(
+            "Log in with `hf auth login`, or set HF_ACCESS_TOKEN/HF_TOKEN, "
+            "before downloading AstaBench."
+        )
     relative = f"tasks/paper_finder_bench/{split}_{ASTA_RELEASE}.json"
     url = (
         f"https://huggingface.co/datasets/{ASTA_DATASET_REPO}/resolve/"
