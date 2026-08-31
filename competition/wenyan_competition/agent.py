@@ -58,7 +58,21 @@ class AcademicSearchAgent:
         scoring_query = self._scoring_query(query, plan)
         strategies = self._initial_strategies(query, plan, scoring_query)
 
-        candidates: List[Paper] = []
+        candidates: List[Paper] = self.retriever.search_exact_bibliographic(
+            query,
+            [plan.intent, *(plan.sub_queries or [])],
+        )
+        if candidates:
+            self._add_trace(
+                trace,
+                role="Crawler",
+                action="exact bibliographic lookup",
+                detail="Resolve an explicitly named title/author/citation-key before topical expansion.",
+                queries=[query],
+                candidates_before=0,
+                candidates_after=len(candidates),
+                selected_count=len(candidates),
+            )
         retrieval_rounds = 0
         stopped_early = False
         stop_reason = ""

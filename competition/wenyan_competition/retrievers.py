@@ -113,6 +113,28 @@ class AcademicRetriever:
                     papers.extend(future.result())
         return deduplicate(papers)
 
+    def search_exact_bibliographic(self, original_query: str, expansions: Iterable[str]) -> List[Paper]:
+        """Resolve an explicitly named paper without changing semantic search.
+
+        The endpoint is intentionally gated by both configuration and a
+        conservative query classifier. It must never run for ordinary topical
+        questions, where a title match would introduce an arbitrary single
+        paper and waste API budget.
+        """
+
+        if (
+            not self.config.use_semantic_scholar
+            or not self.config.use_semantic_scholar_exact_match
+            or not _looks_like_bibliographic_lookup(original_query)
+        ):
+            return []
+        queries = [original_query, *list(expansions)]
+        queries = list(dict.fromkeys(_clean_exact_query(item) for item in queries if item.strip()))
+        out: List[Paper] = []
+        for query in queries[: max(1, self.config.semantic_scholar_exact_query_limit)]:
+            out.extend(self._cached_safe(self.search_semantic_scholar_match, query, warn=False))
+        return deduplicate(out)
+
     def expand_citation_network(self, seeds: List[Paper], max_api_calls: int) -> List[Paper]:
         """Fetch one-hop reference/citation papers from high-value seeds."""
 
@@ -391,6 +413,65 @@ class AcademicRetriever:
                     publication_type=publication_type,
                     references=[x.get("paperId", "") for x in (item.get("references") or []) if x.get("paperId")],
                     citations=[x.get("paperId", "") for x in (item.get("citations") or []) if x.get("paperId")],
+                    api_score=1.0,
+                )
+            )
+        return out
+
+    def search_semantic_scholar_match(self, query: str) -> List[Paper]:
+        self._inc_api()
+        fields = ",".join(
+            [
+                "paperId",
+                "corpusId",
+                "title",
+                "abstract",
+                "year",
+                "authors",
+                "venue",
+                "url",
+                "citationCount",
+                "externalIds",
+                "publicationTypes",
+            ]
+        )
+        url = (
+            "https://api.semanticscholar.org/graph/v1/paper/search/match"
+            f"?query={quote(query)}&fields={quote(fields)}"
+        )
+        headers = {}
+        if self.config.semantic_scholar_api_key:
+            headers["x-api-key"] = self.config.semantic_scholar_api_key
+        response = requests.get(url, headers=headers, timeout=20)
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("data", []) if isinstance(payload, dict) else []
+        out: List[Paper] = []
+        for item in rows[:3]:
+            title = item.get("title") or ""
+            if not title:
+                continue
+            external = item.get("externalIds") or {}
+            out.append(
+                Paper(
+                    paper_id=item.get("paperId", ""),
+                    title=title,
+                    abstract=item.get("abstract") or "",
+                    year=item.get("year"),
+                    authors=[a.get("name", "") for a in item.get("authors", []) if a.get("name")],
+                    venue=item.get("venue") or "",
+                    doi=external.get("DOI", ""),
+                    url=item.get("url") or "",
+                    citation_count=int(item.get("citationCount") or 0),
+                    source="SemanticScholarExact",
+                    source_ids=(
+                        [f"CorpusId:{item['corpusId']}"]
+                        if item.get("corpusId") is not None
+                        else []
+                    ),
+                    publication_type="/".join(item.get("publicationTypes") or []),
                     api_score=1.0,
                 )
             )
@@ -1255,3 +1336,24 @@ _QUERY_STOPWORDS = {
 
 def _query_tokens(text: str) -> List[str]:
     return [t for t in _tokens(text) if t not in _QUERY_STOPWORDS]
+
+
+def _looks_like_bibliographic_lookup(query: str) -> bool:
+    """Conservatively identify requests for one explicitly named paper."""
+
+    text = re.sub(r"\s+", " ", str(query or "")).strip()
+    lowered = text.lower()
+    tokens = re.findall(r"[a-z0-9][a-z0-9^+_.-]*", lowered)
+    if not tokens or len(tokens) > 18:
+        return False
+    has_author_cue = bool(re.search(r"\bby\b.+\b(?:et\s+al|paper|20\d{2})\b", lowered))
+    has_citation_key = bool(re.search(r"\b[a-z][a-z-]*20\d{2}[a-z0-9-]*\b", lowered))
+    named_paper = bool(re.search(r"\bpaper\b", lowered)) and len(tokens) <= 12
+    return has_author_cue or has_citation_key or named_paper
+
+
+def _clean_exact_query(query: str) -> str:
+    text = re.sub(r"\s+", " ", str(query or "")).strip(" \t\r\n?.")
+    text = re.sub(r"^(?:the|a|an)\s+", "", text, flags=re.I)
+    text = re.sub(r"\s+paper$", "", text, flags=re.I)
+    return text

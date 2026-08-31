@@ -75,6 +75,9 @@ intent, entities, methods, datasets, constraints, sub_queries, negative_terms.
 If the user query is Chinese, translate the academic meaning into English first.
 Generate 4-8 precise English academic search queries, including common synonyms,
 technical names, abbreviations, and biomedical/engineering terminology when useful.
+When the user names one paper by acronym, author, or citation key, put the most
+likely canonical full paper title first in sub_queries. Preserve author names and
+years in another sub-query; do not replace a bibliographic lookup with a broad topic.
 
 User query:
 {query}

@@ -20,6 +20,7 @@ from wenyan_competition.retrievers import (
     _arxiv_id_from_url,
     _arxiv_queries,
     _extract_arxiv_ids_from_serper,
+    _looks_like_bibliographic_lookup,
     _openalex_api_work_url,
     _serper_arxiv_queries,
     deduplicate,
@@ -72,6 +73,7 @@ def main() -> None:
         check_dense_title_benchmark_helpers,
         check_title_rrf_fusion,
         check_asta_paper_finder_adapter,
+        check_exact_bibliographic_routing,
         check_smoke_command,
     ]
     for check in checks:
@@ -514,6 +516,16 @@ def check_asta_paper_finder_adapter() -> None:
     assert extract_known_corpus_ids(sample.scorer_criteria) == {"12345", "67890"}
     assert metrics["known_hits@30"] == 1.0
     assert metrics["known_coverage@30"] == 0.5
+
+
+def check_exact_bibliographic_routing() -> None:
+    assert _looks_like_bibliographic_lookup("BART by Lewis et al.")
+    assert _looks_like_bibliographic_lookup("the MS^2 DeYong2021 paper")
+    assert _looks_like_bibliographic_lookup("the Multi-news fabbri2019multinews paper")
+    assert not _looks_like_bibliographic_lookup(
+        "Which papers investigate clustering-based efficient attention in transformers?"
+    )
+    assert not RetrievalConfig().use_semantic_scholar_exact_match
 
 
 def check_smoke_command() -> None:

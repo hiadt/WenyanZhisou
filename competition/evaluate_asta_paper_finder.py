@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence
 
@@ -150,6 +150,8 @@ def run_evaluation(args) -> None:
                     {
                         "query_id": sample.query_id,
                         "query": sample.query,
+                        "query_plan": asdict(result.plan),
+                        "agent_trace": [asdict(item) for item in result.agent_trace],
                         "asta_output": asta_output,
                         "diagnostics": row_metrics,
                         "ranked_papers": [
@@ -171,7 +173,8 @@ def run_evaluation(args) -> None:
             print(
                 f"[{index}/{len(samples)}] {sample.query_id}: "
                 f"resolved={len(asta_output['output']['results'])}/{len(selected)} "
-                f"known_hits@30={row_metrics['known_hits@30']:.0f}"
+                f"known_hits@30={row_metrics['known_hits@30']:.0f}",
+                flush=True,
             )
 
     summary = aggregate_diagnostics(diagnostics)

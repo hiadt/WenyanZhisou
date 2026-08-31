@@ -45,6 +45,11 @@ class SmallModelConfig:
 class RetrievalConfig:
     use_openalex: bool = True
     use_semantic_scholar: bool = True
+    # Resolve short bibliographic queries (title/author/citation-key lookups)
+    # through Semantic Scholar's title-match endpoint. Disabled by default so
+    # established evaluation profiles keep identical behavior.
+    use_semantic_scholar_exact_match: bool = False
+    semantic_scholar_exact_query_limit: int = 3
     use_arxiv: bool = True
     # PaSa-style web crawler source.  If enabled and SERPER_API_KEY is set, the
     # retriever searches Google results constrained to arxiv.org, extracts arXiv
