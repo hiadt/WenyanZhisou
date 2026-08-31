@@ -46,6 +46,17 @@ class AcademicRetriever:
             limit=self.config.pasa_title_limit,
             min_score=self.config.pasa_title_min_score,
         )
+        self._dense_title_retriever = (
+            DenseTitleRetriever.from_path(
+                self.config.dense_title_index_path,
+                paper_db_path=self.config.pasa_id2paper_path,
+                limit=self.config.dense_title_limit,
+                query_prefix=self.config.dense_title_query_prefix,
+                device=self.config.dense_title_device,
+            )
+            if self.config.use_dense_title_index
+            else None
+        )
 
     def reset_stats(self) -> None:
         self.api_calls = 0
@@ -59,9 +70,19 @@ class AcademicRetriever:
         if self._local_retriever:
             for q in query_list:
                 papers.extend(self._local_retriever.search(q))
-        if self._pasa_retriever:
-            for q in query_list:
-                papers.extend(self._pasa_retriever.search(q))
+        for q in query_list:
+            lexical_titles = self._pasa_retriever.search(q) if self._pasa_retriever else []
+            dense_titles = self._dense_title_retriever.search(q) if self._dense_title_retriever else []
+            if dense_titles:
+                papers.extend(
+                    fuse_title_results(
+                        [lexical_titles, dense_titles],
+                        limit=self.config.dense_title_fusion_limit,
+                        rrf_k=self.config.dense_title_rrf_k,
+                    )
+                )
+            else:
+                papers.extend(lexical_titles)
         tasks: List[tuple[Callable[[str], List[Paper]], str]] = []
         for q in query_list:
             if (
@@ -727,6 +748,148 @@ class PasaTitleRetriever:
     def _idf(self, term: str) -> float:
         total = max(1, len(self._papers))
         return math.log((total + 1) / (self._df.get(term, 0) + 1)) + 1.0
+
+
+class DenseTitleRetriever:
+    """Semantic title retrieval over an evaluated, generic FAISS index."""
+
+    def __init__(
+        self,
+        index_dir: str,
+        *,
+        paper_db_path: str,
+        limit: int = 200,
+        query_prefix: str = "",
+        device: str = "auto",
+    ):
+        self.index_dir = Path(index_dir)
+        self.paper_db_path = Path(paper_db_path)
+        self.limit = max(1, limit)
+        self.query_prefix = query_prefix
+        self.device = device
+        self._index = None
+        self._model = None
+        self._paper_ids: List[str] = []
+        self._titles: Dict[str, str] = {}
+        self._model_name = ""
+        self._load_metadata()
+
+    @classmethod
+    def from_path(
+        cls,
+        index_dir: str,
+        *,
+        paper_db_path: str,
+        limit: int = 200,
+        query_prefix: str = "",
+        device: str = "auto",
+    ):
+        required = [
+            Path(index_dir) / "manifest.json",
+            Path(index_dir) / "paper_ids.json",
+            Path(index_dir) / "titles.faiss",
+            Path(paper_db_path),
+        ]
+        if not index_dir or not paper_db_path or not all(path.exists() for path in required):
+            return None
+        return cls(
+            index_dir,
+            paper_db_path=paper_db_path,
+            limit=limit,
+            query_prefix=query_prefix,
+            device=device,
+        )
+
+    def search(self, query: str) -> List[Paper]:
+        if not query.strip():
+            return []
+        self._ensure_runtime()
+        import numpy as np
+
+        vector = self._model.encode(
+            [self.query_prefix + query],
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        ).astype(np.float32, copy=False)
+        scores, rows = self._index.search(vector, self.limit)
+        papers: List[Paper] = []
+        for score, row in zip(scores[0], rows[0]):
+            if int(row) < 0:
+                continue
+            paper_id = self._paper_ids[int(row)]
+            title = self._titles.get(paper_id, "")
+            if not title:
+                continue
+            papers.append(
+                Paper(
+                    paper_id=paper_id,
+                    title=title,
+                    doi=f"10.48550/arXiv.{paper_id}",
+                    url=f"https://arxiv.org/abs/{paper_id}",
+                    source="DenseTitleDB",
+                    publication_type="preprint",
+                    api_score=max(0.0, min(1.0, (float(score) + 1.0) / 2.0)),
+                )
+            )
+        return papers
+
+    def _load_metadata(self) -> None:
+        manifest = json.loads((self.index_dir / "manifest.json").read_text(encoding="utf-8"))
+        self._model_name = str(manifest["model"])
+        self._paper_ids = json.loads(
+            (self.index_dir / "paper_ids.json").read_text(encoding="utf-8")
+        )
+        raw = json.loads(self.paper_db_path.read_text(encoding="utf-8"))
+        for paper_id, value in raw.items():
+            title = (
+                str(value.get("title") or value.get("name") or "")
+                if isinstance(value, dict)
+                else str(value or "")
+            )
+            if title:
+                self._titles[str(paper_id).lower()] = " ".join(title.split())
+        if len(self._paper_ids) != int(manifest["paper_count"]):
+            raise ValueError("dense title index metadata is inconsistent")
+
+    def _ensure_runtime(self) -> None:
+        if self._index is not None and self._model is not None:
+            return
+        import faiss
+        from sentence_transformers import SentenceTransformer
+
+        self._index = faiss.read_index(str(self.index_dir / "titles.faiss"))
+        model_device = None if self.device == "auto" else self.device
+        self._model = SentenceTransformer(self._model_name, device=model_device)
+        if self._index.ntotal != len(self._paper_ids):
+            raise ValueError("dense title FAISS rows do not match paper ids")
+
+
+def fuse_title_results(
+    rankings: List[List[Paper]],
+    *,
+    limit: int,
+    rrf_k: int = 60,
+) -> List[Paper]:
+    """Fuse title rankings without comparing their incompatible raw scores."""
+
+    scores: Dict[str, float] = {}
+    best_rank: Dict[str, int] = {}
+    papers: Dict[str, Paper] = {}
+    for ranking in rankings:
+        for rank, paper in enumerate(ranking, 1):
+            key = paper.key()
+            scores[key] = scores.get(key, 0.0) + 1.0 / (max(1, rrf_k) + rank)
+            best_rank[key] = min(best_rank.get(key, rank), rank)
+            papers.setdefault(key, paper)
+    ordered = sorted(scores, key=lambda key: (-scores[key], best_rank[key], key))
+    if not ordered:
+        return []
+    max_score = scores[ordered[0]] or 1.0
+    return [
+        replace(papers[key], api_score=min(1.0, scores[key] / max_score))
+        for key in ordered[: max(1, limit)]
+    ]
 
 
 def _openalex_abstract(inv: Dict[str, List[int]]) -> str:

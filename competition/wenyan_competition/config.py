@@ -65,6 +65,15 @@ class RetrievalConfig:
     pasa_id2paper_path: str = "data/pasa-dataset/paper_database/id2paper.json"
     pasa_title_limit: int = 80
     pasa_title_min_score: float = 0.10
+    # Disabled by default so the accepted v12 path is unchanged until an
+    # independently evaluated semantic index is explicitly enabled.
+    use_dense_title_index: bool = False
+    dense_title_index_path: str = "indexes/pasa-title-bge-small"
+    dense_title_limit: int = 200
+    dense_title_fusion_limit: int = 120
+    dense_title_rrf_k: int = 60
+    dense_title_query_prefix: str = "Represent this sentence for searching relevant passages: "
+    dense_title_device: str = "auto"
     per_query: int = 20
     max_candidates: int = 120
     citation_expand_seeds: int = 8

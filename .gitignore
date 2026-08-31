@@ -9,6 +9,7 @@ competition/data/pasa-dataset/
 competition/runs/
 competition/checkpoints/
 competition/models/
+competition/indexes/
 
 # Local secrets and machine-specific config.
 competition/.env

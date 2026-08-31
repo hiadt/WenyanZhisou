@@ -23,9 +23,17 @@ from wenyan_competition.retrievers import (
     _openalex_api_work_url,
     _serper_arxiv_queries,
     deduplicate,
+    fuse_title_results,
 )
 from wenyan_competition.schema import Paper, QueryPlan
 from evaluate_pasa import _apply_formal_eval_defaults, flexible_recall_at, paper_aliases
+from train_selector_reranker import load_selector_jsonl, parse_selector_record
+from benchmark_dense_title_retrieval import (
+    normalize_arxiv_id,
+    quality_gate,
+    recall_metrics,
+    reciprocal_rank_fusion,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -51,6 +59,9 @@ def main() -> None:
         check_gap_driven_query_evolution,
         check_normalized_api_cache,
         check_transient_retrieval_retry,
+        check_selector_training_parser,
+        check_dense_title_benchmark_helpers,
+        check_title_rrf_fusion,
         check_smoke_command,
     ]
     for check in checks:
@@ -381,6 +392,60 @@ def check_transient_retrieval_retry() -> None:
     assert calls == 2
     assert papers and papers[0].paper_id == "recovered"
     assert not retriever.warnings
+
+
+def check_selector_training_parser() -> None:
+    record = {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Searched Paper:\nTitle: Relevant Work\nAbstract: A useful abstract.\n\n"
+                    "User Query: Find useful work.\n\nOutput format: Decision: True/False"
+                ),
+            },
+            {"role": "assistant", "content": "True\nReason: direct match"},
+        ]
+    }
+    example = parse_selector_record(record)
+    assert example.query == "Find useful work."
+    assert example.document.startswith("Relevant Work\n")
+    assert example.label == 1
+
+
+def check_dense_title_benchmark_helpers() -> None:
+    assert normalize_arxiv_id("https://arxiv.org/abs/2401.00001v2") == "2401.00001"
+    fused = reciprocal_rank_fusion(
+        [["a", "b", "c"], ["b", "d", "a"]],
+        weights=[1.0, 1.0],
+        rrf_k=60,
+    )
+    assert fused[:2] == ["b", "a"]
+    examples = [{"gold_ids": ["a", "d"]}]
+    metrics = recall_metrics(examples, [fused], [2, 4])
+    assert metrics["macro_recall@2"] == 0.5
+    assert metrics["micro_recall@4"] == 1.0
+    gate = quality_gate(
+        {
+            "lexical": {"macro_recall@20": 0.10, "macro_recall@100": 0.15},
+            "rrf_fusion": {"macro_recall@20": 0.105, "macro_recall@100": 0.18},
+        }
+    )
+    assert gate["accepted_for_end_to_end_trial"]
+
+
+def check_title_rrf_fusion() -> None:
+    lexical = [
+        Paper(paper_id="a", title="A", api_score=0.9),
+        Paper(paper_id="b", title="B", api_score=0.8),
+    ]
+    dense = [
+        Paper(paper_id="b", title="B", api_score=0.7),
+        Paper(paper_id="c", title="C", api_score=0.6),
+    ]
+    fused = fuse_title_results([lexical, dense], limit=3, rrf_k=60)
+    assert [paper.paper_id for paper in fused] == ["b", "a", "c"]
+    assert fused[0].api_score == 1.0
 
 
 def check_smoke_command() -> None:
