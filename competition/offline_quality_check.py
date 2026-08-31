@@ -20,6 +20,8 @@ from wenyan_competition.retrievers import (
     _arxiv_id_from_url,
     _arxiv_queries,
     _extract_arxiv_ids_from_serper,
+    _author_names_from_queries,
+    _looks_like_author_metadata_lookup,
     _looks_like_bibliographic_lookup,
     _openalex_api_work_url,
     _serper_arxiv_queries,
@@ -74,6 +76,7 @@ def main() -> None:
         check_title_rrf_fusion,
         check_asta_paper_finder_adapter,
         check_exact_bibliographic_routing,
+        check_author_metadata_routing,
         check_smoke_command,
     ]
     for check in checks:
@@ -526,6 +529,21 @@ def check_exact_bibliographic_routing() -> None:
         "Which papers investigate clustering-based efficient attention in transformers?"
     )
     assert not RetrievalConfig().use_semantic_scholar_exact_match
+
+
+def check_author_metadata_routing() -> None:
+    assert _looks_like_author_metadata_lookup("a Nature portfolio papers by David Harel")
+    assert _looks_like_author_metadata_lookup(
+        'NAACL 2010 or 2012 papers co-authored by one of the authors of the "BERT" paper'
+    )
+    assert not _looks_like_author_metadata_lookup("BART by Lewis et al.")
+    names = _author_names_from_queries([
+        "NAACL 2010 papers by Jacob Devlin",
+        "NAACL 2012 papers by Kristina Toutanova",
+        "NAACL 2010 papers by Jacob Devlin",
+    ])
+    assert names == ["Jacob Devlin", "Kristina Toutanova"]
+    assert not RetrievalConfig().use_openalex_metadata_constraints
 
 
 def check_smoke_command() -> None:

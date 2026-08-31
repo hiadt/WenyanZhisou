@@ -137,6 +137,100 @@ class AcademicRetriever:
             out.extend(self._cached_safe(self.search_semantic_scholar_match, query, warn=False))
         return deduplicate(out)
 
+    def search_openalex_metadata_constraints(
+        self,
+        original_query: str,
+        expansions: Iterable[str],
+    ) -> List[Paper]:
+        """Resolve author metadata before searching constrained works.
+
+        Free-text search often returns papers mentioning an author instead of
+        papers written by that author. This opt-in route first resolves stable
+        OpenAlex author identities, then pushes explicit years to the API.
+        """
+
+        if (
+            not self.config.use_openalex
+            or not self.config.use_openalex_metadata_constraints
+            or not _looks_like_author_metadata_lookup(original_query)
+        ):
+            return []
+        years = sorted({int(value) for value in re.findall(r"\b(?:19|20)\d{2}\b", original_query)})
+        author_names = _author_names_from_queries([original_query, *list(expansions)])
+        out: List[Paper] = []
+        for author_name in author_names[: max(1, self.config.openalex_metadata_author_limit)]:
+            author_id = self._resolve_openalex_author(author_name)
+            if author_id:
+                out.extend(self._search_openalex_author_works(author_id, original_query, years))
+        return deduplicate(out)
+
+    def _resolve_openalex_author(self, author_name: str) -> str:
+        self._inc_api()
+        response = requests.get(
+            "https://api.openalex.org/authors",
+            params={"search": author_name, "per-page": 5},
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows = response.json().get("results", [])
+        target = normalize_title(author_name)
+        exact = [row for row in rows if normalize_title(row.get("display_name", "")) == target]
+        chosen = exact[0] if exact else (rows[0] if rows else {})
+        return str(chosen.get("id") or "").rsplit("/", 1)[-1]
+
+    def _search_openalex_author_works(
+        self,
+        author_id: str,
+        original_query: str,
+        years: List[int],
+    ) -> List[Paper]:
+        self._inc_api()
+        filters = [f"author.id:{author_id}"]
+        if years:
+            filters.extend([
+                f"from_publication_date:{min(years)}-01-01",
+                f"to_publication_date:{max(years)}-12-31",
+            ])
+        response = requests.get(
+            "https://api.openalex.org/works",
+            params={"filter": ",".join(filters), "per-page": 100, "sort": "cited_by_count:desc"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        nature_portfolio = "nature portfolio" in original_query.lower()
+        out: List[Paper] = []
+        for item in response.json().get("results", []):
+            if years and item.get("publication_year") not in years:
+                continue
+            source = (item.get("primary_location") or {}).get("source") or {}
+            if nature_portfolio and str(source.get("host_organization_name") or "").lower() != "nature portfolio":
+                continue
+            title = item.get("title") or item.get("display_name") or ""
+            if not title:
+                continue
+            venue = source.get("display_name") or ""
+            out.append(Paper(
+                paper_id=item.get("id", ""),
+                title=title,
+                abstract=_openalex_abstract(item.get("abstract_inverted_index") or {}),
+                year=item.get("publication_year"),
+                authors=[
+                    authorship.get("author", {}).get("display_name", "")
+                    for authorship in item.get("authorships", [])
+                    if authorship.get("author", {}).get("display_name")
+                ],
+                venue=venue,
+                doi=(item.get("doi") or "").replace("https://doi.org/", ""),
+                url=((item.get("primary_location") or {}).get("landing_page_url") or item.get("id") or ""),
+                citation_count=int(item.get("cited_by_count") or 0),
+                source="OpenAlexMetadata",
+                publication_type=str(item.get("type") or item.get("type_crossref") or ""),
+                references=list(item.get("referenced_works") or []),
+                citations=list(item.get("related_works") or []),
+                api_score=1.0,
+            ))
+        return out
+
     def expand_citation_network(self, seeds: List[Paper], max_api_calls: int) -> List[Paper]:
         """Fetch one-hop reference/citation papers from high-value seeds."""
 
@@ -1359,3 +1453,29 @@ def _clean_exact_query(query: str) -> str:
     text = re.sub(r"^(?:the|a|an)\s+", "", text, flags=re.I)
     text = re.sub(r"\s+paper$", "", text, flags=re.I)
     return text
+
+
+def _looks_like_author_metadata_lookup(query: str) -> bool:
+    """Identify plural paper searches constrained by authorship metadata."""
+
+    lowered = re.sub(r"\s+", " ", str(query or "")).lower()
+    return bool(
+        re.search(r"\b(?:papers|publications|works)\b", lowered)
+        and re.search(r"\b(?:by|authored|co-authored|coauthored)\b", lowered)
+    )
+
+
+def _author_names_from_queries(queries: Iterable[str]) -> List[str]:
+    """Extract planner-emitted author names without accepting generic phrases."""
+
+    names: List[str] = []
+    pattern = re.compile(
+        r"\bby\s+([A-Z][A-Za-z'\N{RIGHT SINGLE QUOTATION MARK}-]+"
+        r"(?:\s+[A-Z][A-Za-z'\N{RIGHT SINGLE QUOTATION MARK}-]+){1,3})\b"
+    )
+    for query in queries:
+        for match in pattern.finditer(str(query or "")):
+            name = match.group(1).strip()
+            if normalize_title(name) not in {normalize_title(item) for item in names}:
+                names.append(name)
+    return names

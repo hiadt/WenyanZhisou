@@ -73,6 +73,23 @@ class AcademicSearchAgent:
                 candidates_after=len(candidates),
                 selected_count=len(candidates),
             )
+        metadata_candidates = self.retriever.search_openalex_metadata_constraints(
+            query,
+            plan.sub_queries,
+        )
+        if metadata_candidates:
+            before_metadata = len(candidates)
+            candidates = deduplicate([*candidates, *metadata_candidates])
+            self._add_trace(
+                trace,
+                role="Crawler",
+                action="structured author metadata lookup",
+                detail="Resolve author identities first, then retrieve works under explicit year/publisher constraints.",
+                queries=plan.sub_queries,
+                candidates_before=before_metadata,
+                candidates_after=len(candidates),
+                selected_count=len(metadata_candidates),
+            )
         retrieval_rounds = 0
         stopped_early = False
         stop_reason = ""
@@ -399,7 +416,7 @@ class AcademicSearchAgent:
             elif label.startswith("irrelevant"):
                 label_bonus = -0.35
             family = _source_family(p.source)
-            source_bonus = 0.18 if family == "SemanticScholarExact" else (
+            source_bonus = 0.18 if family in {"SemanticScholarExact", "OpenAlexMetadata"} else (
                 0.025 if family in {"SerperArxiv", "arXiv", "PaSaTitleDB"} else 0.0
             )
             score_value = (
@@ -430,6 +447,7 @@ class AcademicSearchAgent:
         per_source = max(1, limit // max(1, len(buckets)))
         priority_sources = [
             "SemanticScholarExact",
+            "OpenAlexMetadata",
             "SerperArxiv",
             "arXiv",
             "PaSaTitleDB",
@@ -635,7 +653,7 @@ def _unique(items: List[str]) -> List[str]:
 
 def _source_family(source: str) -> str:
     source = source or "unknown"
-    for family in ["SemanticScholarExact", "SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]:
+    for family in ["SemanticScholarExact", "OpenAlexMetadata", "SerperArxiv", "arXiv", "PaSaTitleDB", "SemanticScholar", "OpenAlex"]:
         if family in source:
             return family
     return source

@@ -50,6 +50,11 @@ class RetrievalConfig:
     # established evaluation profiles keep identical behavior.
     use_semantic_scholar_exact_match: bool = False
     semantic_scholar_exact_query_limit: int = 3
+    # Resolve explicit author/year metadata queries through OpenAlex author
+    # identities instead of treating names and venues as free-text keywords.
+    # Kept opt-in so established PaSa profiles remain identical.
+    use_openalex_metadata_constraints: bool = False
+    openalex_metadata_author_limit: int = 4
     use_arxiv: bool = True
     # PaSa-style web crawler source.  If enabled and SERPER_API_KEY is set, the
     # retriever searches Google results constrained to arxiv.org, extracts arXiv
