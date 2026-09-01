@@ -7,6 +7,7 @@ from pathlib import Path
 
 import requests
 
+from wenyan_competition.agent import _requires_verifiable_metadata
 from wenyan_competition.config import RetrievalConfig, load_config
 from wenyan_competition.constraints import (
     apply_constraint_policy,
@@ -78,6 +79,7 @@ def main() -> None:
         check_asta_paper_finder_adapter,
         check_exact_bibliographic_routing,
         check_author_metadata_routing,
+        check_metadata_source_hygiene_routing,
         check_asta_official_output_policy,
         check_smoke_command,
     ]
@@ -546,6 +548,27 @@ def check_author_metadata_routing() -> None:
     ])
     assert names == ["Jacob Devlin", "Kristina Toutanova"]
     assert not RetrievalConfig().use_openalex_metadata_constraints
+
+
+def check_metadata_source_hygiene_routing() -> None:
+    metadata_plan = QueryPlan(
+        original_query="Claire Cardie ACL papers published at 2014 or 2017",
+        constraints={"venue": "ACL", "year": [2014, 2017], "author": "Claire Cardie"},
+    )
+    assert _requires_verifiable_metadata(metadata_plan.original_query, metadata_plan)
+    citation_plan = QueryPlan(
+        original_query="Papers citing DistilBERT after 2022 with more than 50 citations",
+        constraints={"cites": "DistilBERT", "min_citations": 50},
+    )
+    assert _requires_verifiable_metadata(citation_plan.original_query, citation_plan)
+    topical_plan = QueryPlan(
+        original_query="retrieval augmented generation architectures",
+        constraints={"topic": "RAG"},
+    )
+    assert not _requires_verifiable_metadata(topical_plan.original_query, topical_plan)
+    exact_plan = QueryPlan(original_query="BART by Lewis et al.")
+    assert not _requires_verifiable_metadata(exact_plan.original_query, exact_plan)
+    assert RetrievalConfig().suppress_title_only_for_metadata_queries is False
 
 
 def check_asta_official_output_policy() -> None:

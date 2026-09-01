@@ -65,15 +65,28 @@ class AcademicRetriever:
         self._serper_queries_used = 0
         self._arxiv_queries_used = 0
 
-    def search_many(self, queries: Iterable[str]) -> List[Paper]:
+    def search_many(
+        self,
+        queries: Iterable[str],
+        *,
+        include_title_sources: bool = True,
+    ) -> List[Paper]:
         query_list = list(queries)
         papers: List[Paper] = []
         if self._local_retriever:
             for q in query_list:
                 papers.extend(self._local_retriever.search(q))
         for q in query_list:
-            lexical_titles = self._pasa_retriever.search(q) if self._pasa_retriever else []
-            dense_titles = self._dense_title_retriever.search(q) if self._dense_title_retriever else []
+            lexical_titles = (
+                self._pasa_retriever.search(q)
+                if include_title_sources and self._pasa_retriever
+                else []
+            )
+            dense_titles = (
+                self._dense_title_retriever.search(q)
+                if include_title_sources and self._dense_title_retriever
+                else []
+            )
             if dense_titles:
                 papers.extend(
                     fuse_title_results(

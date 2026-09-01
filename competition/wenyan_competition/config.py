@@ -85,6 +85,9 @@ class RetrievalConfig:
     dense_title_rrf_k: int = 60
     dense_title_query_prefix: str = "Represent this sentence for searching relevant passages: "
     dense_title_device: str = "auto"
+    # Title-only indexes cannot verify author, venue or citation constraints.
+    # Keep this opt-in so established evaluation profiles remain unchanged.
+    suppress_title_only_for_metadata_queries: bool = False
     per_query: int = 20
     max_candidates: int = 120
     citation_expand_seeds: int = 8

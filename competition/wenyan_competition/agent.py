@@ -57,6 +57,10 @@ class AcademicSearchAgent:
         queries = list(dict.fromkeys(plan.sub_queries or [query]))
         scoring_query = self._scoring_query(query, plan)
         strategies = self._initial_strategies(query, plan, scoring_query)
+        include_title_sources = not (
+            self.config.retrieval.suppress_title_only_for_metadata_queries
+            and _requires_verifiable_metadata(query, plan)
+        )
 
         candidates: List[Paper] = self.retriever.search_exact_bibliographic(
             query,
@@ -155,7 +159,10 @@ class AcademicSearchAgent:
                 if not strategy_queries:
                     continue
                 before = len(candidates)
-                found = self.retriever.search_many(strategy_queries)
+                found = self.retriever.search_many(
+                    strategy_queries,
+                    include_title_sources=include_title_sources,
+                )
                 candidates = deduplicate(candidates + found)
                 candidates = self.ranker.rank(scoring_query, candidates)[: self.config.retrieval.max_candidates]
                 self._add_trace(
@@ -674,6 +681,31 @@ def _constraint_terms(constraints) -> List[str]:
     if isinstance(constraints, list):
         return [str(x) for x in constraints[:8]]
     return [str(constraints)]
+
+
+def _requires_verifiable_metadata(query: str, plan: QueryPlan) -> bool:
+    """Detect constraints that cannot be checked from title text alone."""
+
+    text = " ".join([query, str(plan.constraints)]).lower()
+    explicit_patterns = [
+        r"\bpapers?\s+(?:written|authored|co-authored)\s+by\b",
+        r"\bpapers?\s+by\b",
+        r"\bpapers?\s+(?:that\s+)?cit(?:e|es|ed|ing)\b",
+        r"\b(?:more|fewer|less)\s+than\s+\d+\s+citations?\b",
+        r"\bat\s+least\s+\d+\s+(?:citations?|authors?)\b",
+        r"\bcited\s+by\s+at\s+least\b",
+        r"\bpublished\s+(?:at|in|by)\b",
+    ]
+    if any(re.search(pattern, text) for pattern in explicit_patterns):
+        return True
+
+    keys = {str(key).lower() for key in (plan.constraints or {})}
+    metadata_keys = {
+        "author", "authors", "coauthor", "venue", "conference", "journal",
+        "publisher", "cites", "cited_by", "min_citations", "citation_count",
+        "min_authors",
+    }
+    return bool(keys & metadata_keys)
 
 
 def _wants_recent(query: str, plan: QueryPlan) -> bool:

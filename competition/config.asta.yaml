@@ -51,6 +51,9 @@ retrieval:
   dense_title_rrf_k: 60
   dense_title_query_prefix: "Represent this sentence for searching relevant passages: "
   dense_title_device: "auto"
+  # Metadata-constrained searches need candidates with authors, venues and
+  # citation fields; title-only indexes remain enabled for other queries.
+  suppress_title_only_for_metadata_queries: true
   local_corpus_path: ""
   local_min_score: 0.0
   per_query: 20
