@@ -94,10 +94,30 @@ class AcademicSearchAgent:
                 candidates_after=len(candidates),
                 selected_count=len(metadata_candidates),
             )
+        metadata_direct = bool(
+            metadata_candidates
+            and self.config.retrieval.metadata_direct_shortcut
+            and _requires_verifiable_metadata(query, plan)
+        )
+        if metadata_direct:
+            candidates = self.ranker.rank(scoring_query, candidates)
+            self._add_trace(
+                trace,
+                role="BudgetController",
+                action="metadata direct shortcut",
+                detail=(
+                    "Structured lookup returned verifiable candidates; skip broad "
+                    "title retrieval and rank the evidence-bearing set directly."
+                ),
+                candidates_before=len(candidates),
+                candidates_after=len(candidates),
+                selected_count=len(candidates),
+            )
         retrieval_rounds = 0
         stopped_early = False
         stop_reason = ""
-        for round_id in range(max(1, self.config.retrieval.max_rounds)):
+        round_limit = 0 if metadata_direct else max(1, self.config.retrieval.max_rounds)
+        for round_id in range(round_limit):
             if self.retriever.api_calls >= self.config.budget.max_api_calls_per_query:
                 stop_reason = "API budget exhausted"
                 stopped_early = True

@@ -88,6 +88,9 @@ class RetrievalConfig:
     # Title-only indexes cannot verify author, venue or citation constraints.
     # Keep this opt-in so established evaluation profiles remain unchanged.
     suppress_title_only_for_metadata_queries: bool = False
+    # When structured author/year lookup returns verifiable papers, rank that
+    # compact set directly instead of mixing it with a large topical pool.
+    metadata_direct_shortcut: bool = False
     per_query: int = 20
     max_candidates: int = 120
     citation_expand_seeds: int = 8

@@ -569,6 +569,7 @@ def check_metadata_source_hygiene_routing() -> None:
     exact_plan = QueryPlan(original_query="BART by Lewis et al.")
     assert not _requires_verifiable_metadata(exact_plan.original_query, exact_plan)
     assert RetrievalConfig().suppress_title_only_for_metadata_queries is False
+    assert RetrievalConfig().metadata_direct_shortcut is False
 
 
 def check_asta_official_output_policy() -> None:
