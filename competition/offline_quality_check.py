@@ -46,6 +46,7 @@ from evaluate_asta_paper_finder import (
     load_asta_samples,
     semantic_scholar_lookup_id,
 )
+from asta_solver_service import official_output_limit
 
 
 ROOT = Path(__file__).resolve().parent
@@ -77,6 +78,7 @@ def main() -> None:
         check_asta_paper_finder_adapter,
         check_exact_bibliographic_routing,
         check_author_metadata_routing,
+        check_asta_official_output_policy,
         check_smoke_command,
     ]
     for check in checks:
@@ -544,6 +546,14 @@ def check_author_metadata_routing() -> None:
     ])
     assert names == ["Jacob Devlin", "Kristina Toutanova"]
     assert not RetrievalConfig().use_openalex_metadata_constraints
+
+
+def check_asta_official_output_policy() -> None:
+    exact = Paper(paper_id="exact", title="Exact", source="SemanticScholarExact+OpenAlex")
+    topical = Paper(paper_id="topical", title="Topical", source="OpenAlex")
+    assert official_output_limit([(exact, "1")], 100) == 1
+    assert official_output_limit([(topical, "2")], 100) == 100
+    assert official_output_limit([], 100) == 100
 
 
 def check_smoke_command() -> None:
