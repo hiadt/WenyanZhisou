@@ -113,6 +113,7 @@ class RetrievalConfig:
 
 @dataclass
 class RankingConfig:
+    use_embedding: bool = True
     use_reranker: bool = True
     api_weight: float = 0.10
     bm25_weight: float = 0.15

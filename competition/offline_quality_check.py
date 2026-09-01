@@ -34,7 +34,12 @@ from wenyan_competition.retrievers import (
     fuse_title_results,
 )
 from wenyan_competition.schema import Paper, QueryPlan
-from evaluate_pasa import _apply_formal_eval_defaults, flexible_recall_at, paper_aliases
+from evaluate_pasa import (
+    _apply_formal_eval_defaults,
+    _disable_semantic_small_models,
+    flexible_recall_at,
+    paper_aliases,
+)
 from train_selector_reranker import load_selector_jsonl, parse_selector_record
 from benchmark_dense_title_retrieval import (
     normalize_arxiv_id,
@@ -70,6 +75,7 @@ def main() -> None:
         check_arxiv_query_helpers,
         check_serper_arxiv_helpers,
         check_formal_eval_defaults,
+        check_semantic_small_model_ablation,
         check_openalex_url_normalization,
         check_citation_fetch_warnings_are_quiet,
         check_cross_source_identity_fusion,
@@ -608,6 +614,15 @@ def check_asta_official_output_policy() -> None:
     assert official_resolved_results(noisy, 100) == [(exact, "1")]
     assert official_resolved_results([(topical, "2")], 100) == [(topical, "2")]
     assert official_resolved_results([], 100) == []
+
+
+def check_semantic_small_model_ablation() -> None:
+    config = load_config(ROOT / "config.v12.yaml")
+    _disable_semantic_small_models(config)
+    assert config.ranking.use_embedding is False
+    assert config.ranking.embedding_weight == 0.0
+    assert config.ranking.use_reranker is False
+    assert config.ranking.reranker_weight == 0.0
 
 
 def check_smoke_command() -> None:

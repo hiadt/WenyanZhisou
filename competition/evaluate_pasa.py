@@ -25,6 +25,11 @@ def main() -> None:
     parser.add_argument("--top_k", type=int, default=20)
     parser.add_argument("--no_llm", action="store_true")
     parser.add_argument("--no_reranker", action="store_true")
+    parser.add_argument(
+        "--no_semantic_small_models",
+        action="store_true",
+        help="Disable both embedding and cross-encoder reranker scoring for ablation.",
+    )
     parser.add_argument("--openalex_only", action="store_true")
     parser.add_argument("--fallback_models", action="store_true")
     parser.add_argument("--no_eval_boost", action="store_true")
@@ -34,6 +39,8 @@ def main() -> None:
     if args.no_reranker:
         config.ranking.use_reranker = False
         config.ranking.reranker_weight = 0.0
+    if args.no_semantic_small_models:
+        _disable_semantic_small_models(config)
     if args.openalex_only:
         config.retrieval.use_openalex = True
         config.retrieval.use_semantic_scholar = False
@@ -100,6 +107,15 @@ def main() -> None:
 def _remote_llm_requires_key(base_url: str) -> bool:
     normalized = (base_url or "").lower()
     return not any(host in normalized for host in ("127.0.0.1", "localhost", "0.0.0.0"))
+
+
+def _disable_semantic_small_models(config) -> None:
+    """Remove embedding and cross-encoder contributions for a true ablation."""
+
+    config.ranking.use_embedding = False
+    config.ranking.embedding_weight = 0.0
+    config.ranking.use_reranker = False
+    config.ranking.reranker_weight = 0.0
 
 
 def _apply_formal_eval_defaults(config, use_llm: bool) -> None:

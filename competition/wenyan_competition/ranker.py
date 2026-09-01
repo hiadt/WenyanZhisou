@@ -17,7 +17,11 @@ class CompetitionRanker:
         force_fallback_models: bool = False,
     ):
         self.config = ranking_config
-        self.embedding = EmbeddingModel(small_model_config, force_fallback=force_fallback_models)
+        self.embedding = (
+            EmbeddingModel(small_model_config, force_fallback=force_fallback_models)
+            if ranking_config.use_embedding
+            else None
+        )
         self.reranker = (
             CrossEncoderReranker(small_model_config, force_fallback=force_fallback_models)
             if ranking_config.use_reranker
@@ -28,7 +32,7 @@ class CompetitionRanker:
         if not papers:
             return []
         bm25 = bm25_like_scores(query, papers)
-        emb = self.embedding.score(query, papers)
+        emb = self.embedding.score(query, papers) if self.embedding is not None else [0.0] * len(papers)
         rerank = self.reranker.score(query, papers) if self.reranker is not None else [0.0] * len(papers)
         api = _normalize(
             [
