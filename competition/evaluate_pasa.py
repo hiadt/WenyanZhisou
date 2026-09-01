@@ -24,11 +24,23 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--top_k", type=int, default=20)
     parser.add_argument("--no_llm", action="store_true")
+    parser.add_argument("--no_reranker", action="store_true")
+    parser.add_argument("--openalex_only", action="store_true")
     parser.add_argument("--fallback_models", action="store_true")
     parser.add_argument("--no_eval_boost", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.no_reranker:
+        config.ranking.use_reranker = False
+        config.ranking.reranker_weight = 0.0
+    if args.openalex_only:
+        config.retrieval.use_openalex = True
+        config.retrieval.use_semantic_scholar = False
+        config.retrieval.use_arxiv = False
+        config.retrieval.use_serper = False
+        config.retrieval.pasa_id2paper_path = ""
+        config.retrieval.local_corpus_path = ""
     if not args.no_llm and _remote_llm_requires_key(config.llm.base_url) and not config.llm.api_key:
         parser.error(
             "LLM API key is missing. Run 'source .env' before formal evaluation "

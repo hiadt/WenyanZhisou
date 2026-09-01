@@ -18,14 +18,18 @@ class CompetitionRanker:
     ):
         self.config = ranking_config
         self.embedding = EmbeddingModel(small_model_config, force_fallback=force_fallback_models)
-        self.reranker = CrossEncoderReranker(small_model_config, force_fallback=force_fallback_models)
+        self.reranker = (
+            CrossEncoderReranker(small_model_config, force_fallback=force_fallback_models)
+            if ranking_config.use_reranker
+            else None
+        )
 
     def rank(self, query: str, papers: List[Paper]) -> List[Paper]:
         if not papers:
             return []
         bm25 = bm25_like_scores(query, papers)
         emb = self.embedding.score(query, papers)
-        rerank = self.reranker.score(query, papers)
+        rerank = self.reranker.score(query, papers) if self.reranker is not None else [0.0] * len(papers)
         api = _normalize(
             [
                 p.api_score
