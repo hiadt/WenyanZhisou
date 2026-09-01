@@ -10,7 +10,7 @@ import requests
 from wenyan_competition.agent import (
     _requires_verifiable_metadata,
     is_dense_only_candidate,
-    protect_dense_head,
+    merge_baseline_head,
 )
 from wenyan_competition.config import RetrievalConfig, load_config
 from wenyan_competition.constraints import (
@@ -473,51 +473,27 @@ def check_title_rrf_fusion() -> None:
 
 
 def check_dense_head_protection() -> None:
-    config = load_config(ROOT / "config.dense.yaml").ranking
-    papers = [
-        Paper(
-            paper_id="dense-noise",
-            title="Dense noise",
-            source="DenseTitleDB",
-            embedding_score=0.40,
-            reranker_score=0.95,
-            final_score=0.99,
-        ),
-        Paper(
-            paper_id="dense-good",
-            title="Dense supported",
-            source="DenseTitleDB",
-            embedding_score=0.90,
-            reranker_score=0.90,
-            final_score=0.98,
-        ),
-        Paper(
-            paper_id="cross-source",
-            title="Cross-source dense result",
-            source="DenseTitleDB+OpenAlex",
-            final_score=0.97,
-        ),
-    ]
-    papers.extend(
-        Paper(
-            paper_id=f"api-{index}",
-            title=f"API paper {index}",
-            source="OpenAlex",
-            final_score=0.90 - index / 100.0,
-        )
+    baseline = [
+        Paper(paper_id=f"api-{index}", title=f"API paper {index}", source="OpenAlex")
         for index in range(25)
-    )
-    protected = protect_dense_head(papers, config)
-    head_ids = [paper.paper_id for paper in protected[:20]]
-    assert "dense-noise" not in head_ids
-    assert "dense-good" in head_ids
-    assert "cross-source" in head_ids
-    assert protected[20].paper_id == "dense-noise"
-    assert is_dense_only_candidate(papers[0]) is True
-    assert is_dense_only_candidate(papers[2]) is False
+    ]
+    dense = [
+        Paper(paper_id=f"dense-{index}", title=f"Dense paper {index}", source="DenseTitleDB")
+        for index in range(10)
+    ]
+    merged = merge_baseline_head(baseline, dense + baseline, 20)
+    assert [paper.paper_id for paper in merged[:20]] == [
+        paper.paper_id for paper in baseline[:20]
+    ]
+    assert any(is_dense_only_candidate(paper) for paper in merged[20:])
+    assert is_dense_only_candidate(dense[0]) is True
+    assert is_dense_only_candidate(
+        Paper(paper_id="cross", title="Cross", source="DenseTitleDB+OpenAlex")
+    ) is False
 
-    short = protect_dense_head(papers[:2], config)
-    assert len(short) == 2
+    short = merge_baseline_head(baseline[:1], dense[:2] + baseline[:1], 2)
+    assert len(short) == 3
+    assert short[0].paper_id == "api-0"
 
 
 def check_asta_paper_finder_adapter() -> None:

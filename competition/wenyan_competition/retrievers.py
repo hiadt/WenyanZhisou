@@ -88,13 +88,17 @@ class AcademicRetriever:
                 else []
             )
             if dense_titles:
-                papers.extend(
-                    fuse_title_results(
-                        [lexical_titles, dense_titles],
-                        limit=self.config.dense_title_fusion_limit,
-                        rrf_k=self.config.dense_title_rrf_k,
+                if self.config.dense_title_preserve_lexical:
+                    papers.extend(lexical_titles)
+                    papers.extend(dense_titles[: self.config.dense_title_fusion_limit])
+                else:
+                    papers.extend(
+                        fuse_title_results(
+                            [lexical_titles, dense_titles],
+                            limit=self.config.dense_title_fusion_limit,
+                            rrf_k=self.config.dense_title_rrf_k,
+                        )
                     )
-                )
             else:
                 papers.extend(lexical_titles)
         tasks: List[tuple[Callable[[str], List[Paper]], str]] = []

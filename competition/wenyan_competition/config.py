@@ -83,6 +83,7 @@ class RetrievalConfig:
     dense_title_limit: int = 200
     dense_title_fusion_limit: int = 120
     dense_title_rrf_k: int = 60
+    dense_title_preserve_lexical: bool = False
     dense_title_query_prefix: str = "Represent this sentence for searching relevant passages: "
     dense_title_device: str = "auto"
     # Title-only indexes cannot verify author, venue or citation constraints.
@@ -128,9 +129,6 @@ class RankingConfig:
     # Disabled by default so the validated v12 profile remains unchanged.
     dense_head_protection: bool = False
     dense_head_size: int = 20
-    dense_head_max_dense_only: int = 4
-    dense_head_min_embedding: float = 0.65
-    dense_head_min_reranker: float = 0.70
 
 
 @dataclass

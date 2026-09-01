@@ -44,6 +44,7 @@ retrieval:
   dense_title_limit: 160
   dense_title_fusion_limit: 100
   dense_title_rrf_k: 60
+  dense_title_preserve_lexical: true
   dense_title_query_prefix: "Represent this sentence for searching relevant passages: "
   dense_title_device: "auto"
 
@@ -68,13 +69,10 @@ ranking:
   diversity_weight: 0.01
   llm_verify_top_n: 8
   llm_verifier_batch_size: 20
-  # Admit only model-supported dense-only papers into Top20. Deferred papers
-  # remain available in positions 21-100 for high-recall evaluation.
+  # Rank the preserved v12 candidate stream independently for Top20. Dense
+  # candidates supplement positions 21-100 instead of displacing the head.
   dense_head_protection: true
   dense_head_size: 20
-  dense_head_max_dense_only: 4
-  dense_head_min_embedding: 0.65
-  dense_head_min_reranker: 0.70
 
 budget:
   max_llm_calls_per_query: 4
