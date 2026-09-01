@@ -46,7 +46,7 @@ from evaluate_asta_paper_finder import (
     load_asta_samples,
     semantic_scholar_lookup_id,
 )
-from asta_solver_service import official_output_limit
+from asta_solver_service import official_resolved_results
 
 
 ROOT = Path(__file__).resolve().parent
@@ -551,9 +551,10 @@ def check_author_metadata_routing() -> None:
 def check_asta_official_output_policy() -> None:
     exact = Paper(paper_id="exact", title="Exact", source="SemanticScholarExact+OpenAlex")
     topical = Paper(paper_id="topical", title="Topical", source="OpenAlex")
-    assert official_output_limit([(exact, "1")], 100) == 1
-    assert official_output_limit([(topical, "2")], 100) == 100
-    assert official_output_limit([], 100) == 100
+    noisy = [(topical, "2"), (exact, "1")]
+    assert official_resolved_results(noisy, 100) == [(exact, "1")]
+    assert official_resolved_results([(topical, "2")], 100) == [(topical, "2")]
+    assert official_resolved_results([], 100) == []
 
 
 def check_smoke_command() -> None:
