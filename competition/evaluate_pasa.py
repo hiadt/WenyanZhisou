@@ -30,6 +30,11 @@ def main() -> None:
         action="store_true",
         help="Disable both embedding and cross-encoder reranker scoring for ablation.",
     )
+    parser.add_argument(
+        "--no_title_index",
+        action="store_true",
+        help="Disable local sparse/dense title indexes while retaining online academic sources.",
+    )
     parser.add_argument("--openalex_only", action="store_true")
     parser.add_argument("--fallback_models", action="store_true")
     parser.add_argument("--no_eval_boost", action="store_true")
@@ -41,6 +46,10 @@ def main() -> None:
         config.ranking.reranker_weight = 0.0
     if args.no_semantic_small_models:
         _disable_semantic_small_models(config)
+    if args.no_title_index:
+        config.retrieval.pasa_id2paper_path = ""
+        config.retrieval.use_dense_title_index = False
+        config.retrieval.dense_title_index_path = ""
     if args.openalex_only:
         config.retrieval.use_openalex = True
         config.retrieval.use_semantic_scholar = False
