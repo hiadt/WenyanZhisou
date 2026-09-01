@@ -312,18 +312,10 @@ class AcademicSearchAgent:
             before_dense_head = [
                 paper.key() for paper in candidates[: self.config.ranking.dense_head_size]
             ]
+            # ``candidates`` is already fully ranked above. Re-ranking the
+            # non-dense subset repeats embedding and cross-encoder inference
+            # without adding evidence, so preserve its existing relative order.
             baseline = [paper for paper in candidates if not is_dense_only_candidate(paper)]
-            baseline = self.ranker.rank(scoring_query, baseline)
-            if not synthesize:
-                baseline = self._selector_first_sort(baseline)
-            baseline = apply_constraint_policy(
-                query,
-                plan,
-                baseline,
-                min(top_k, self.config.ranking.dense_head_size),
-                weight=self.config.ranking.constraint_weight,
-                hard_filter_year=self.config.ranking.constraint_hard_filter_year,
-            )
             candidates = merge_baseline_head(
                 baseline,
                 candidates,
