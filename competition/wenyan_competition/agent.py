@@ -308,6 +308,27 @@ class AcademicSearchAgent:
             weight=self.config.ranking.constraint_weight,
             hard_filter_year=self.config.ranking.constraint_hard_filter_year,
         )
+        before_dense_head = [paper.key() for paper in candidates[: self.config.ranking.dense_head_size]]
+        candidates = protect_dense_head(candidates, self.config.ranking)
+        after_dense_head = [paper.key() for paper in candidates[: self.config.ranking.dense_head_size]]
+        if before_dense_head != after_dense_head:
+            dense_only_count = sum(
+                1
+                for paper in candidates[: self.config.ranking.dense_head_size]
+                if is_dense_only_candidate(paper)
+            )
+            self._add_trace(
+                trace,
+                role="Ranker",
+                action="dense head admission",
+                detail=(
+                    "Protect Top20 precision with embedding/reranker admission; "
+                    f"dense-only admitted={dense_only_count}. Deferred candidates remain in Top21-100."
+                ),
+                candidates_before=len(candidates),
+                candidates_after=len(candidates),
+                selected_count=min(self.config.ranking.dense_head_size, len(candidates)),
+            )
         constraint_coverage = build_constraint_coverage(query, plan, candidates[:top_k])
         if constraint_coverage["total_dimensions"]:
             self._add_trace(
@@ -360,6 +381,7 @@ class AcademicSearchAgent:
             agent_trace=trace,
             constraint_coverage=constraint_coverage,
         )
+
 
     def _scoring_query(self, query: str, plan: QueryPlan) -> str:
         parts = [query, plan.intent]
@@ -669,6 +691,51 @@ class AcademicSearchAgent:
             f"Returned {len(papers)} papers. {len(high)} papers are high-confidence candidates. "
             f"Top result: {papers[0].title}."
         )
+
+
+def protect_dense_head(papers: List[Paper], ranking_config) -> List[Paper]:
+    """Limit unsupported dense-only papers in the head without deleting them."""
+
+    if not ranking_config.dense_head_protection or not papers:
+        return papers
+    head_size = min(max(1, ranking_config.dense_head_size), len(papers))
+    dense_quota = max(0, ranking_config.dense_head_max_dense_only)
+    selected_indexes: List[int] = []
+    admitted_dense = 0
+
+    for index, paper in enumerate(papers):
+        if len(selected_indexes) >= head_size:
+            break
+        if not is_dense_only_candidate(paper):
+            selected_indexes.append(index)
+            continue
+        model_supported = (
+            paper.embedding_score >= ranking_config.dense_head_min_embedding
+            and paper.reranker_score >= ranking_config.dense_head_min_reranker
+        )
+        llm_supported = paper.llm_score >= 0.80 or paper.relevance_label.lower().startswith("high")
+        if admitted_dense < dense_quota and (model_supported or llm_supported):
+            selected_indexes.append(index)
+            admitted_dense += 1
+
+    if len(selected_indexes) < head_size:
+        selected = set(selected_indexes)
+        for index in range(len(papers)):
+            if index not in selected:
+                selected_indexes.append(index)
+                selected.add(index)
+                if len(selected_indexes) >= head_size:
+                    break
+
+    selected = set(selected_indexes)
+    return [papers[index] for index in selected_indexes] + [
+        paper for index, paper in enumerate(papers) if index not in selected
+    ]
+
+
+def is_dense_only_candidate(paper: Paper) -> bool:
+    sources = {source for source in (paper.source or "").split("+") if source}
+    return sources == {"DenseTitleDB"}
 
 
 def _tokens(text: str):

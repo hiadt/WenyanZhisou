@@ -125,6 +125,12 @@ class RankingConfig:
     llm_verifier_batch_size: int = 20
     constraint_weight: float = 0.04
     constraint_hard_filter_year: bool = True
+    # Disabled by default so the validated v12 profile remains unchanged.
+    dense_head_protection: bool = False
+    dense_head_size: int = 20
+    dense_head_max_dense_only: int = 4
+    dense_head_min_embedding: float = 0.65
+    dense_head_min_reranker: float = 0.70
 
 
 @dataclass
